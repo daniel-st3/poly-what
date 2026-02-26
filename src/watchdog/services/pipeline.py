@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -21,6 +22,7 @@ from watchdog.risk.kelly import EmpiricalKellySizer
 from watchdog.risk.vpin import TradeFlow, VPINCalculator, should_halt_maker
 from watchdog.services.market_sync import sync_markets_once
 from watchdog.signals.calibration import CalibrationSurfaceService
+from watchdog.signals.telegram_bot import TelegramAlerter
 
 LOGGER = logging.getLogger(__name__)
 
@@ -131,6 +133,7 @@ class PipelineRunner:
         calibration: CalibrationSurfaceService,
         sizer: EmpiricalKellySizer,
         vpin_calc: VPINCalculator,
+        alerter: TelegramAlerter | None = None,
     ) -> None:
         self.settings = settings
         self.session_factory = session_factory
@@ -140,6 +143,55 @@ class PipelineRunner:
         self.calibration = calibration
         self.sizer = sizer
         self.vpin_calc = vpin_calc
+        self.alerter = alerter
+        self._background_tasks: set[asyncio.Task] = set()
+
+    async def _update_telemetry_price_after_delay(
+        self,
+        telemetry_id: int,
+        market_slug: str,
+        delay_seconds: int,
+        field_name: str,
+        experiment_id: str,
+    ) -> None:
+        await asyncio.sleep(delay_seconds)
+        try:
+            response = await asyncio.to_thread(self.cli.orderbook, market_slug)
+            metrics = _extract_orderbook_metrics(response.payload)
+            price = float(metrics.get("mid") or 0.5)
+
+            with self.session_factory() as session:
+                row = session.get(Telemetry, telemetry_id)
+                if row is None:
+                    return
+                setattr(row, field_name, price)
+
+                if (
+                    row.market_price_at_signal is not None
+                    and row.market_price_5m is not None
+                    and row.market_price_at_signal < 0.90
+                    and row.market_price_5m > 0.90
+                ):
+                    LOGGER.warning(
+                        "LATENCY ALERT: Market moved significantly after signal. "
+                        "Possible edge erosion. Review experiment_id: %s",
+                        experiment_id,
+                    )
+                    if self.alerter is not None:
+                        delta = row.market_price_5m - row.market_price_at_signal
+                        self.alerter.send_latency_alert(
+                            experiment_id=experiment_id,
+                            signal_ms=int(row.total_latency_ms or 0),
+                            price_moved=float(delta),
+                        )
+                session.commit()
+        except Exception as exc:  # pragma: no cover - defensive runtime guard
+            LOGGER.warning(
+                "Failed deferred telemetry update for telemetry_id=%s field=%s: %s",
+                telemetry_id,
+                field_name,
+                exc,
+            )
 
     async def run_once(self, max_news: int = 10, experiment_id: str = "exp50") -> PipelineStats:
         stats = PipelineStats()
@@ -316,6 +368,9 @@ class PipelineRunner:
                                     if isinstance(payload, dict):
                                         order_id = str(payload.get("order_id") or payload.get("id") or order_id)
                                     ts_order = datetime.now(UTC)
+                                else:
+                                    ts_order = datetime.now(UTC)
+                                    order_submission_latency_ms = 0
 
                                 trade = Trade(
                                     market_id=market.id,
@@ -331,30 +386,56 @@ class PipelineRunner:
                                 )
                                 session.add(trade)
                                 stats.executed_trades += 1
+                                if self.alerter is not None:
+                                    signal.is_paper = is_paper
+                                    signal.kelly_fraction = fraction
+                                    self.alerter.send_signal_alert(signal=signal, market=market, snapshot=metrics)
 
                     session.add(signal)
                     session.flush()
 
-                    session.add(
-                        Telemetry(
-                            pipeline_id=pipeline_id,
-                            market_id=market.id,
-                            news_event_id=news_row.id,
-                            ts_news_received=ts_news_received,
-                            ts_router_completed=ts_router,
-                            ts_calibration_completed=ts_calibration,
-                            ts_executor_completed=ts_executor,
-                            ts_order_submitted=ts_order,
-                            market_price_at_signal=market_prob,
-                            market_price_1m=None,
-                            market_price_5m=None,
-                            router_latency_ms=router_latency_ms,
-                            calibration_latency_ms=calibration_latency_ms,
-                            executor_latency_ms=executor_latency_ms,
-                            order_submission_latency_ms=order_submission_latency_ms,
-                            total_latency_ms=int((time.perf_counter() - t0) * 1000),
+                    telemetry = Telemetry(
+                        pipeline_id=pipeline_id,
+                        market_id=market.id,
+                        news_event_id=news_row.id,
+                        ts_news_received=ts_news_received,
+                        ts_router_completed=ts_router,
+                        ts_calibration_completed=ts_calibration,
+                        ts_executor_completed=ts_executor,
+                        ts_order_submitted=ts_order,
+                        market_price_at_signal=market_prob,
+                        market_price_1m=None,
+                        market_price_5m=None,
+                        router_latency_ms=router_latency_ms,
+                        calibration_latency_ms=calibration_latency_ms,
+                        executor_latency_ms=executor_latency_ms,
+                        order_submission_latency_ms=order_submission_latency_ms,
+                        total_latency_ms=int((time.perf_counter() - t0) * 1000),
+                    )
+                    session.add(telemetry)
+                    session.flush()
+
+                    task_1m = asyncio.create_task(
+                        self._update_telemetry_price_after_delay(
+                            telemetry_id=telemetry.id,
+                            market_slug=slug,
+                            delay_seconds=60,
+                            field_name="market_price_1m",
+                            experiment_id=experiment_id,
                         )
                     )
+                    task_5m = asyncio.create_task(
+                        self._update_telemetry_price_after_delay(
+                            telemetry_id=telemetry.id,
+                            market_slug=slug,
+                            delay_seconds=300,
+                            field_name="market_price_5m",
+                            experiment_id=experiment_id,
+                        )
+                    )
+                    self._background_tasks.update({task_1m, task_5m})
+                    task_1m.add_done_callback(self._background_tasks.discard)
+                    task_5m.add_done_callback(self._background_tasks.discard)
                     stats.generated_signals += 1
 
                 news_row.processed = True

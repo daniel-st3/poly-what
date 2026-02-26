@@ -68,6 +68,8 @@ def should_halt_maker(
         return False
 
     now = datetime.now(UTC)
+    if resolution_time.tzinfo is None:
+        resolution_time = resolution_time.replace(tzinfo=UTC)
     remaining_hours = (resolution_time - now).total_seconds() / 3600
     if remaining_hours <= near_resolution_hours:
         return True
