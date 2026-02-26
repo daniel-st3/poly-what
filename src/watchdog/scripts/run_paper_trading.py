@@ -3,84 +3,195 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
-import numpy as np
+from dateutil import parser as dtparser
 from sqlalchemy import select
 
-from watchdog.backtest.metrics import compute_sharpe_ratio
 from watchdog.core.config import get_settings
+from watchdog.core.exceptions import PolymarketCliError
 from watchdog.core.logging import configure_logging
 from watchdog.db.init import init_db
 from watchdog.db.models import Market, Signal, Trade
 from watchdog.db.session import build_engine, build_session_factory
-from watchdog.llm.executor import build_executor
-from watchdog.llm.router import build_router
-from watchdog.market_data.manifold_client import ManifoldClient, ManifoldMarket
-from watchdog.news.models import NewsItem
-from watchdog.risk.kelly import EmpiricalKellySizer
+from watchdog.market_data.manifold_client import ManifoldAPIError, ManifoldClient
+from watchdog.market_data.polymarket_cli import PolymarketCli
+from watchdog.services.pipeline import _extract_orderbook_metrics, _hours_to_resolution
 from watchdog.signals.calibration import CalibrationSurfaceService
 
 LOGGER = logging.getLogger(__name__)
 
 
-@dataclass(slots=True)
-class PaperPosition:
-    trade_id: int
-    manifold_market_id: str
-    slug: str
-    side: str
-    entry_price: float
-    stake: float
+def _extract_markets_payload(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("markets", "items", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
 
 
-def _hours_to_resolution(close_time: datetime | None) -> float:
-    if close_time is None:
-        return 24.0
-    now = datetime.now(UTC)
-    return max((close_time - now).total_seconds() / 3600.0, 0.1)
+def _parse_resolution_time(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        parsed = dtparser.parse(str(value))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
 
 
-def _market_domain(market: ManifoldMarket) -> str:
-    return str(market.raw.get("groupSlug") or "other").lower()
+def _upsert_market(session, market_row: dict[str, Any]) -> Market:
+    slug = str(market_row.get("slug") or "").strip()
+    if not slug:
+        raise ValueError("Market slug is required")
 
-
-def _load_historical_arrays(session, market_db_id: int) -> tuple[np.ndarray, np.ndarray]:
-    signal_rows = session.execute(
-        select(Signal.divergence).where(Signal.market_id == market_db_id, Signal.should_trade.is_(True)).limit(500)
-    ).all()
-    trade_rows = session.execute(
-        select(Trade.pnl, Trade.entry_price)
-        .where(Trade.market_id == market_db_id, Trade.pnl.is_not(None), Trade.entry_price > 0)
-        .limit(500)
-    ).all()
-    edges = np.array([abs(float(row[0])) for row in signal_rows], dtype=np.float64)
-    returns = np.array([float(pnl) / float(entry) for pnl, entry in trade_rows], dtype=np.float64)
-    return edges, returns
-
-
-def _upsert_market(session, market: ManifoldMarket, domain: str) -> Market:
-    existing = session.execute(select(Market).where(Market.slug == market.slug)).scalar_one_or_none()
-    if existing is not None:
-        existing.question = market.question
-        existing.domain = domain
-        existing.resolution_time = market.close_time
-        existing.status = "resolved" if market.is_resolved else "active"
-        existing.resolution_outcome = str(market.outcome) if market.outcome is not None else None
+    existing = session.execute(select(Market).where(Market.slug == slug)).scalar_one_or_none()
+    if existing is None:
+        existing = Market(
+            slug=slug,
+            question=str(market_row.get("question") or slug),
+            domain=str(market_row.get("domain") or "other"),
+            yes_token_id=str(market_row.get("yes_token_id") or "") or None,
+            no_token_id=str(market_row.get("no_token_id") or "") or None,
+            resolution_time=_parse_resolution_time(market_row.get("resolution_time")),
+            status=str(market_row.get("status") or "active"),
+        )
+        session.add(existing)
+        session.flush()
         return existing
 
-    row = Market(
-        slug=market.slug,
-        question=market.question,
-        domain=domain,
-        resolution_time=market.close_time,
-        status="resolved" if market.is_resolved else "active",
-        resolution_outcome=str(market.outcome) if market.outcome is not None else None,
-    )
-    session.add(row)
-    session.flush()
-    return row
+    existing.question = str(market_row.get("question") or existing.question)
+    existing.domain = str(market_row.get("domain") or existing.domain)
+    existing.yes_token_id = str(market_row.get("yes_token_id") or existing.yes_token_id or "") or None
+    existing.no_token_id = str(market_row.get("no_token_id") or existing.no_token_id or "") or None
+    existing.resolution_time = _parse_resolution_time(market_row.get("resolution_time")) or existing.resolution_time
+    existing.status = str(market_row.get("status") or existing.status)
+    return existing
+
+
+async def _load_platform_markets(
+    *,
+    platform: str,
+    max_markets: int,
+    manifold: ManifoldClient | None,
+    polymarket: PolymarketCli | None,
+) -> list[dict[str, Any]]:
+    if platform == "manifold":
+        assert manifold is not None
+        rows = await asyncio.to_thread(manifold.get_markets, max_markets)
+        out: list[dict[str, Any]] = []
+        for raw in rows:
+            resolved = bool(raw.get("isResolved") or raw.get("resolved") or raw.get("resolution") is not None)
+            if resolved:
+                continue
+
+            market_id = str(raw.get("id") or raw.get("marketId") or "").strip()
+            slug = str(raw.get("slug") or market_id).strip()
+            if not market_id or not slug:
+                continue
+
+            probability = float(raw.get("probability") or 0.5)
+            probability = max(0.01, min(0.99, probability))
+
+            out.append(
+                {
+                    "market_id": market_id,
+                    "slug": slug,
+                    "question": str(raw.get("question") or raw.get("text") or slug),
+                    "domain": manifold._infer_domain(raw),
+                    "resolution_time": _parse_resolution_time(raw.get("closeTime") or raw.get("close_time")),
+                    "status": "active",
+                    "probability": probability,
+                    "yes_token_id": market_id,
+                    "no_token_id": market_id,
+                }
+            )
+        return out
+
+    assert polymarket is not None
+    response = await asyncio.to_thread(polymarket.list_markets, max_markets)
+    rows = _extract_markets_payload(response.payload)
+    out = []
+    for row in rows:
+        slug = str(row.get("slug") or "").strip()
+        if not slug:
+            continue
+
+        status = str(row.get("status") or "active").lower()
+        if status not in {"active", "open"}:
+            continue
+
+        orderbook = await asyncio.to_thread(polymarket.orderbook, slug)
+        metrics = _extract_orderbook_metrics(orderbook.payload)
+        mid = float(metrics.get("mid") or 0.0)
+        if mid <= 0:
+            continue
+
+        out.append(
+            {
+                "market_id": slug,
+                "slug": slug,
+                "question": str(row.get("question") or row.get("title") or slug),
+                "domain": str(row.get("domain") or row.get("category") or "other"),
+                "resolution_time": _parse_resolution_time(row.get("endDate") or row.get("resolution_time")),
+                "status": status,
+                "probability": max(0.01, min(0.99, mid)),
+                "yes_token_id": str(row.get("yesTokenId") or row.get("yes_token_id") or slug),
+                "no_token_id": str(row.get("noTokenId") or row.get("no_token_id") or slug),
+            }
+        )
+
+    return out
+
+
+async def _running_pnl_estimate(
+    *,
+    platform: str,
+    session_factory,
+    manifold: ManifoldClient | None,
+    polymarket: PolymarketCli | None,
+) -> float:
+    with session_factory() as session:
+        open_trades = session.execute(
+            select(Trade, Market)
+            .join(Market, Trade.market_id == Market.id)
+            .where(Trade.is_paper.is_(True), Trade.status == "open")
+        ).all()
+
+    pnl_estimate = 0.0
+    for trade, market in open_trades:
+        mark_probability = None
+        if platform == "manifold" and manifold is not None and market.yes_token_id:
+            try:
+                market_row = await asyncio.to_thread(manifold.get_market, market.yes_token_id)
+                mark_probability = float(market_row.get("probability") or 0.5)
+            except Exception:
+                continue
+        elif platform == "polymarket" and polymarket is not None:
+            try:
+                response = await asyncio.to_thread(polymarket.orderbook, market.slug)
+                metrics = _extract_orderbook_metrics(response.payload)
+                mark_probability = float(metrics.get("mid") or 0.5)
+            except Exception:
+                continue
+
+        if mark_probability is None:
+            continue
+
+        mark_probability = max(0.01, min(0.99, mark_probability))
+        mark_price = mark_probability if trade.side == "YES" else (1 - mark_probability)
+        contracts = trade.size / max(trade.entry_price, 1e-9)
+        pnl_estimate += contracts * (mark_price - trade.entry_price)
+
+    return float(pnl_estimate)
 
 
 async def run_paper_trading_loop(
@@ -92,197 +203,151 @@ async def run_paper_trading_loop(
     settings = get_settings()
     configure_logging(settings)
 
-    if platform != "manifold":
-        raise ValueError("Only platform='manifold' is currently supported in run_paper_trading")
+    if platform not in {"manifold", "polymarket"}:
+        raise ValueError("platform must be one of: manifold, polymarket")
 
     engine = build_engine(settings)
     init_db(engine)
     session_factory = build_session_factory(engine)
 
-    manifold = ManifoldClient(
-        settings.manifold_api_base_url,
-        settings.manifold_api_key,
-        session_factory=session_factory,
-        enable_live_trading=settings.enable_live_trading,
+    manifold = (
+        ManifoldClient(base_url=settings.manifold_api_base_url, api_key=settings.manifold_api_key)
+        if platform == "manifold"
+        else None
     )
-    router = build_router(settings)
-    executor = build_executor(settings)
-    calibration = CalibrationSurfaceService()
-    sizer = EmpiricalKellySizer(
-        kelly_fraction=settings.kelly_fraction,
-        max_drawdown_p95=settings.max_drawdown_p95,
-    )
+    polymarket = PolymarketCli(settings) if platform == "polymarket" else None
+    if polymarket is not None:
+        polymarket.startup_check()
 
+    calibration = CalibrationSurfaceService()
     bankroll = float(virtual_bankroll)
-    closed_returns: list[float] = []
-    closed_pnls: list[float] = []
-    open_positions: dict[str, PaperPosition] = {}
     iteration = 0
 
-    with session_factory() as session:
-        calibration.load_from_db(session)
-
-    LOGGER.warning("Paper trading mode active on %s (virtual bankroll %.2f)", platform, bankroll)
+    LOGGER.warning("Paper trading mode started | platform=%s virtual_bankroll=%.2f", platform, bankroll)
 
     while True:
         iteration += 1
+        markets_checked = 0
+        signals_generated = 0
+        bets_placed = 0
 
-        active_markets = await manifold.get_active_markets(limit=max_markets)
         with session_factory() as session:
             calibration.load_from_db(session)
 
-            for market in active_markets:
-                if market.slug in open_positions:
-                    continue
+        market_rows = await _load_platform_markets(
+            platform=platform,
+            max_markets=max_markets,
+            manifold=manifold,
+            polymarket=polymarket,
+        )
 
-                domain = _market_domain(market)
-                db_market = _upsert_market(session, market, domain)
+        with session_factory() as session:
+            for market_row in market_rows:
+                markets_checked += 1
+                db_market = _upsert_market(session, market_row)
 
-                p_market = float(np.clip(market.probability, 0.01, 0.99))
-                calib = calibration.calibrate(
+                p_market = float(market_row["probability"])
+                result = calibration.calibrate(
                     market_probability=p_market,
-                    hours_to_resolution=_hours_to_resolution(market.close_time),
-                    domain=domain,
+                    hours_to_resolution=_hours_to_resolution(db_market.resolution_time),
+                    domain=db_market.domain,
                     sentiment_score=0.0,
                 )
-                divergence = abs(calib.model_probability - p_market)
+                divergence = abs(result.model_probability - p_market)
 
                 signal = Signal(
                     market_id=db_market.id,
-                    model_probability=calib.model_probability,
+                    model_probability=result.model_probability,
                     market_probability=p_market,
                     divergence=divergence,
-                    signal_type="paper_manifold",
-                    calibration_adjustments=calib.adjustment,
+                    signal_type=f"paper_{platform}",
+                    calibration_adjustments=result.adjustment,
                     should_trade=False,
-                    rationale="",
+                    rationale="divergence_below_threshold",
                 )
 
                 if divergence < settings.min_divergence_paper:
-                    signal.rationale = "divergence_below_paper_threshold"
                     session.add(signal)
                     continue
 
-                news_item = NewsItem(
-                    headline=market.question,
-                    source="paper:manifold",
-                    url=f"https://manifold.markets/{market.slug}",
-                    raw_text=market.question,
-                    domain_tags=domain,
-                    received_at=datetime.now(UTC),
-                )
+                signals_generated += 1
+                side = "YES" if result.model_probability > p_market else "NO"
+                stake = min(bankroll * settings.max_position_per_market, bankroll * 0.10)
+                stake = max(stake, 1.0)
+                kelly_fraction = min(stake / max(bankroll, 1e-9), settings.max_position_per_market)
+                entry_price = p_market if side == "YES" else (1 - p_market)
 
-                route = await router.route(news_item, [market.slug])
-                if not route.relevant:
-                    signal.rationale = "router_irrelevant"
-                    signal.router_confidence = route.confidence
-                    session.add(signal)
-                    continue
-
-                decision = await executor.decide(
-                    {
-                        "market_slug": market.slug,
-                        "market_question": market.question,
-                        "market_probability": p_market,
-                        "model_probability": calib.model_probability,
-                        "divergence": divergence,
-                        "min_divergence": settings.min_divergence_paper,
-                    }
-                )
-                signal.router_confidence = route.confidence
-                signal.executor_confidence = decision.confidence
-                signal.rationale = decision.rationale
-
-                if not decision.trade or decision.side not in {"YES", "NO"}:
-                    session.add(signal)
-                    continue
-
-                hist_edges, hist_returns = _load_historical_arrays(session, db_market.id)
-                sizing = sizer.size(
-                    p_model=calib.model_probability,
-                    p_market=p_market,
-                    side=decision.side,
-                    historical_edge_estimates=hist_edges,
-                    historical_trade_returns=hist_returns,
-                )
-
-                size_fraction = min(sizing.empirical_fraction, settings.max_position_per_market)
-                stake = bankroll * size_fraction
-                if stake <= 0:
-                    signal.rationale = f"{signal.rationale} | non_positive_size"
-                    session.add(signal)
-                    continue
-
-                entry_price = p_market if decision.side == "YES" else (1 - p_market)
                 signal.should_trade = True
+                signal.rationale = "divergence_triggered"
                 session.add(signal)
                 session.flush()
 
-                trade = Trade(
-                    market_id=db_market.id,
-                    signal_id=signal.id,
-                    side=decision.side,
-                    size=stake,
-                    entry_price=entry_price,
-                    kelly_fraction=size_fraction,
-                    confidence_score=decision.confidence,
-                    order_id=f"paper-manifold-{market.market_id}-{iteration}",
-                    is_paper=True,
-                    opened_at=datetime.now(UTC),
-                    status="open",
+                order_id = f"paper-{platform}-{market_row['market_id']}-{iteration}"
+                if platform == "manifold" and manifold is not None:
+                    try:
+                        bet_response = await asyncio.to_thread(
+                            manifold.place_bet,
+                            market_row["market_id"],
+                            side,
+                            stake,
+                        )
+                        order_id = str(
+                            bet_response.get("id")
+                            or bet_response.get("betId")
+                            or bet_response.get("orderId")
+                            or order_id
+                        )
+                    except (ManifoldAPIError, ValueError) as exc:
+                        LOGGER.warning(
+                            "Manifold place_bet failed for %s (%s). Logging simulated paper bet.",
+                            market_row["slug"],
+                            exc,
+                        )
+
+                session.add(
+                    Trade(
+                        market_id=db_market.id,
+                        signal_id=signal.id,
+                        side=side,
+                        size=stake,
+                        entry_price=entry_price,
+                        kelly_fraction=kelly_fraction,
+                        confidence_score=min(1.0, divergence),
+                        order_id=order_id,
+                        is_paper=True,
+                        status="open",
+                        opened_at=datetime.now(UTC),
+                    )
                 )
-                session.add(trade)
-                session.flush()
+                bets_placed += 1
 
-                open_positions[market.slug] = PaperPosition(
-                    trade_id=trade.id,
-                    manifold_market_id=market.market_id,
-                    slug=market.slug,
-                    side=decision.side,
-                    entry_price=entry_price,
-                    stake=stake,
-                )
-
-            session.commit()
-
-        for slug, position in list(open_positions.items()):
-            latest = await manifold.get_market(position.manifold_market_id)
-            if not latest.is_resolved or latest.outcome is None:
-                continue
-
-            contracts = position.stake / max(position.entry_price, 1e-8)
-            payoff = float(latest.outcome) if position.side == "YES" else float(1 - latest.outcome)
-            pnl = contracts * (payoff - position.entry_price)
-
-            bankroll_before = bankroll
-            bankroll += pnl
-            if bankroll_before > 0:
-                closed_returns.append(pnl / bankroll_before)
-            closed_pnls.append(pnl)
-
-            with session_factory() as session:
-                trade_row = session.get(Trade, position.trade_id)
-                if trade_row is not None:
-                    trade_row.exit_price = 1.0 if payoff > 0 else 0.0
-                    trade_row.pnl = pnl
-                    trade_row.closed_at = datetime.now(UTC)
-                    trade_row.status = "closed"
+            try:
                 session.commit()
+            except Exception:
+                session.rollback()
+                raise
 
-            del open_positions[slug]
+        running_pnl_estimate = await _running_pnl_estimate(
+            platform=platform,
+            session_factory=session_factory,
+            manifold=manifold,
+            polymarket=polymarket,
+        )
 
-        if iteration % settings.paper_summary_every == 0:
-            win_rate = float(np.mean(np.asarray(closed_pnls) > 0)) if closed_pnls else 0.0
-            sharpe = compute_sharpe_ratio(closed_returns, periods_per_year=365, risk_free=0.0)
-            LOGGER.info(
-                "paper_summary iter=%s bankroll=%.2f closed=%s win_rate=%.3f sharpe=%.3f open_positions=%s",
-                iteration,
-                bankroll,
-                len(closed_pnls),
-                win_rate,
-                sharpe,
-                len(open_positions),
-            )
+        LOGGER.info(
+            "paper_summary markets_checked=%s signals_generated=%s bets_placed=%s running_pnl_estimate=%.4f",
+            markets_checked,
+            signals_generated,
+            bets_placed,
+            running_pnl_estimate,
+        )
+        print(
+            "paper_summary "
+            f"markets_checked={markets_checked} "
+            f"signals_generated={signals_generated} "
+            f"bets_placed={bets_placed} "
+            f"running_pnl_estimate={running_pnl_estimate:.4f}"
+        )
 
         if iterations > 0 and iteration >= iterations:
             break
@@ -293,7 +358,7 @@ async def run_paper_trading_loop(
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Run Watchdog paper-trading loop")
     parser.add_argument("--virtual-bankroll", type=float, default=500.0)
-    parser.add_argument("--platform", type=str, default="manifold")
+    parser.add_argument("--platform", choices=["manifold", "polymarket"], default="manifold")
     parser.add_argument("--max-markets", type=int, default=80)
     parser.add_argument("--iterations", type=int, default=0, help="0 means run forever")
     args = parser.parse_args()
@@ -307,4 +372,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except PolymarketCliError as exc:
+        print(f"Paper trading halted: {exc}")
+        raise SystemExit(1) from None
