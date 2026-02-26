@@ -20,6 +20,8 @@ venv/
 *.db
 *.sqlite
 *.sqlite3
+backtest_results/
+becker_analysis/
 
 # OS/editor noise
 .DS_Store
