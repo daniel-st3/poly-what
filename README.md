@@ -119,3 +119,4 @@ python -m watchdog.scripts.run_live_validation --experiment-id feb2026_v1 --bank
 - `python -m watchdog.scripts.run_backtest --platform polymarket --domain politics`
 - `python -m watchdog.scripts.run_market_maker --dry-run`
 - `python -m watchdog.scripts.run_becker_analysis --platform polymarket`
+- `python -m watchdog.scripts.download_becker_data --output-dir ./data/becker`
