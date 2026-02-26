@@ -1,0 +1,2 @@
+[console_scripts]
+watchdog = watchdog.cli:app

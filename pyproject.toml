@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "watchdog"
+version = "0.1.0"
+description = "Watchdog: dual-agent prediction market intelligence system"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "Daniel" }
+]
+dependencies = [
+  "aiosqlite>=0.20.0",
+  "duckdb>=1.1.3",
+  "feedparser>=6.0.11",
+  "httpx>=0.28.1",
+  "numpy>=2.0.0",
+  "praw>=7.8.1",
+  "pydantic>=2.10.0",
+  "pydantic-settings>=2.7.0",
+  "python-dateutil>=2.9.0.post0",
+  "SQLAlchemy>=2.0.36",
+  "tenacity>=9.0.0",
+  "typer>=0.15.1",
+  "vaderSentiment>=3.3.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.4",
+  "pytest-asyncio>=0.25.3",
+  "ruff>=0.9.4",
+]
+
+[project.scripts]
+watchdog = "watchdog.cli:app"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "ASYNC", "C4", "SIM", "RUF"]
+ignore = ["E501"]

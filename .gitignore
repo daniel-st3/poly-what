@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.dylib
+
+# Virtual envs
+.venv/
+venv/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local env/config
+.env
+
+# Local databases and state
+*.db
+*.sqlite
+*.sqlite3
+
+# OS/editor noise
+.DS_Store
+.vscode/
+.idea/
