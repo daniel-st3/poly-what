@@ -24,6 +24,7 @@ class Settings(BaseSettings):
 
     manifold_api_base_url: str = "https://api.manifold.markets/v0"
     manifold_api_key: str | None = None
+    manifold_user_id: str | None = None
     paper_loop_seconds: int = Field(default=60, ge=5, le=3600)
     paper_summary_every: int = Field(default=10, ge=1, le=1000)
 
