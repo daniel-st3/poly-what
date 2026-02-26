@@ -11,7 +11,7 @@ from sqlalchemy import text
 from watchdog.core.config import Settings, get_settings
 from watchdog.core.exceptions import GeoblockError, PolymarketCliError
 from watchdog.core.logging import configure_logging
-from watchdog.db.init import init_db
+from watchdog.db.base import Base
 from watchdog.db.session import build_engine, build_session_factory
 from watchdog.llm.executor import build_executor
 from watchdog.llm.router import build_router
@@ -39,35 +39,50 @@ def _build_runtime() -> tuple[Settings, PolymarketCli]:
 def init_db_command() -> None:
     settings, _ = _build_runtime()
     engine = build_engine(settings)
-    init_db(engine)
+    Base.metadata.create_all(engine)
     typer.echo("Initialized database schema")
 
 
 @app.command("healthcheck")
 def healthcheck_command() -> None:
     settings, cli = _build_runtime()
+    failed = False
+
+    typer.echo(f"[INFO] LIVE_TRADING={settings.enable_live_trading}")
 
     engine = build_engine(settings)
-    with engine.connect() as conn:
-        conn.execute(text("SELECT 1"))
-
-    status = {"database": "ok", "polymarket_cli": "unknown", "geoblock": "unknown"}
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        typer.echo("[OK]  DB connection")
+    except Exception as exc:
+        typer.echo(f"[FAIL] DB connection ({exc})")
+        failed = True
 
     try:
         version = cli.check_version()
-        status["polymarket_cli"] = version
+        typer.echo(f"[OK]  polymarket CLI version {version}")
     except PolymarketCliError as exc:
-        status["polymarket_cli"] = f"error: {exc}"
+        message = str(exc).lower()
+        if "not found" in message:
+            typer.echo("[FAIL] polymarket CLI not found")
+        else:
+            typer.echo(f"[FAIL] polymarket CLI version check failed ({exc})")
+        failed = True
 
-    try:
-        cli.check_geoblock()
-        status["geoblock"] = "ok"
-    except GeoblockError as exc:
-        status["geoblock"] = f"blocked: {exc}"
-    except PolymarketCliError as exc:
-        status["geoblock"] = f"error: {exc}"
+    if settings.anthropic_api_key or settings.openai_api_key:
+        typer.echo("[OK]  LLM API key configured")
+    else:
+        typer.echo("[FAIL] missing LLM API key (set ANTHROPIC_API_KEY or OPENAI_API_KEY)")
+        failed = True
 
-    typer.echo(str(status))
+    if settings.telegram_bot_token:
+        typer.echo("[OK]  TELEGRAM_BOT_TOKEN configured")
+    else:
+        typer.echo("[WARN] TELEGRAM_BOT_TOKEN not set (alerts disabled)")
+
+    if failed:
+        raise typer.Exit(code=1)
 
 
 @app.command("sync-markets")
