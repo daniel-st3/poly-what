@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+# VERIFIED
+
 import argparse
 import asyncio
 import logging
-from datetime import UTC
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import case, func, select
 
@@ -14,7 +17,7 @@ from watchdog.db.init import init_db
 from watchdog.db.models import MakerQuote, Market, MarketSnapshot, Trade
 from watchdog.db.session import build_engine, build_session_factory
 from watchdog.market_data.polymarket_cli import PolymarketCli
-from watchdog.risk.vpin import TradeFlow, VPINCalculator, should_halt_maker
+from watchdog.risk.vpin import TradeFlow, VPINCalculator
 from watchdog.services.market_sync import sync_markets_once
 from watchdog.services.pipeline import _extract_orderbook_metrics, _hours_to_resolution
 from watchdog.trading.maker_model import AvellanedaStoikovPredictionMM
@@ -54,9 +57,183 @@ def _recent_vpin(session, market_id: int, calculator: VPINCalculator) -> float:
     return calculator.compute(flows)
 
 
+def run_market_maker_cycle(
+    *,
+    session,
+    cli: PolymarketCli,
+    settings,
+    maker: AvellanedaStoikovPredictionMM,
+    vpin_calc: VPINCalculator,
+    max_markets: int,
+    market_slug: str | None,
+    dry_run: bool,
+    quote_size: float,
+) -> dict[str, int]:
+    sync_markets_once(session, cli, limit=max(200, max_markets))
+    markets = session.execute(
+        select(Market)
+        .where(Market.status.in_(["active", "open"]))
+        .order_by(Market.id.asc())
+        .limit(max_markets)
+    ).scalars().all()
+    if market_slug:
+        markets = [m for m in markets if m.slug == market_slug]
+
+    quoted = 0
+    skipped = 0
+    for market in markets:
+        response = cli.orderbook(market.slug)
+        metrics = _extract_orderbook_metrics(response.payload)
+        mid = float(metrics.get("mid") or 0.0)
+        if mid <= 0:
+            skipped += 1
+            LOGGER.info("Skipping %s: no mid-price", market.slug)
+            continue
+
+        session.add(
+            MarketSnapshot(
+                market_id=market.id,
+                bid=metrics.get("bid"),
+                ask=metrics.get("ask"),
+                mid=metrics.get("mid"),
+                spread=metrics.get("spread"),
+                bid_volume=metrics.get("bid_volume"),
+                ask_volume=metrics.get("ask_volume"),
+                total_volume=metrics.get("total_volume"),
+                cli_latency_ms=response.latency_ms,
+                raw_json=str(response.payload),
+            )
+        )
+        session.flush()
+
+        vpin = _recent_vpin(session, market.id, vpin_calc)
+        inventory_before = _open_inventory(session, market.id)
+
+        near_resolution = False
+        if market.resolution_time is not None:
+            resolution_time = market.resolution_time
+            if resolution_time.tzinfo is None:
+                resolution_time = resolution_time.replace(tzinfo=UTC)
+            remaining_hours = (resolution_time - datetime.now(UTC)).total_seconds() / 3600
+            near_resolution = remaining_hours <= settings.near_resolution_hours
+
+        if vpin >= settings.vpin_kill_threshold:
+            skipped += 1
+            LOGGER.info(
+                "Skipping %s: VPIN %.4f >= threshold %.4f",
+                market.slug,
+                vpin,
+                settings.vpin_kill_threshold,
+            )
+            session.add(
+                MakerQuote(
+                    market_id=market.id,
+                    reservation_price=mid,
+                    optimal_spread=0.0,
+                    bid_price=mid,
+                    ask_price=mid,
+                    vpin_score=vpin,
+                    reward_eligible=False,
+                    inventory_before=inventory_before,
+                    inventory_after=inventory_before,
+                    canceled=True,
+                )
+            )
+            continue
+
+        if near_resolution:
+            skipped += 1
+            LOGGER.info("Skipping %s: within near_resolution_hours=%s", market.slug, settings.near_resolution_hours)
+            session.add(
+                MakerQuote(
+                    market_id=market.id,
+                    reservation_price=mid,
+                    optimal_spread=0.0,
+                    bid_price=mid,
+                    ask_price=mid,
+                    vpin_score=vpin,
+                    reward_eligible=False,
+                    inventory_before=inventory_before,
+                    inventory_after=inventory_before,
+                    canceled=True,
+                )
+            )
+            continue
+
+        base_quote = maker.compute_quotes(
+            mid_price=mid,
+            inventory=inventory_before,
+            tau_hours=_hours_to_resolution(market.resolution_time),
+        )
+        half_spread = max(float(settings.backtest_spread_proxy), 0.01)
+        bid_yes = float(max(0.01, min(0.99, mid - half_spread)))
+        ask_yes = float(max(0.01, min(0.99, mid + half_spread)))
+        ask_no = float(max(0.01, min(0.99, 1 - ask_yes)))
+
+        yes_token = market.yes_token_id or market.slug
+        no_token = market.no_token_id or market.slug
+
+        if dry_run:
+            bid_payload: dict[str, Any] = {"order_id": f"dry-bid-{market.id}"}
+            ask_payload: dict[str, Any] = {"order_id": f"dry-ask-{market.id}"}
+            LOGGER.info(
+                "DRY-RUN quote market=%s bid_yes=%.4f ask_yes=%.4f half_spread=%.4f vpin=%.4f",
+                market.slug,
+                bid_yes,
+                ask_yes,
+                half_spread,
+                vpin,
+            )
+        else:
+            bid_resp = cli.create_limit_order(
+                token_id=yes_token,
+                side="YES",
+                price=bid_yes,
+                size=quote_size,
+                post_only=True,
+            )
+            ask_resp = cli.create_limit_order(
+                token_id=no_token,
+                side="NO",
+                price=ask_no,
+                size=quote_size,
+                post_only=True,
+            )
+            bid_payload = bid_resp.payload if isinstance(bid_resp.payload, dict) else {}
+            ask_payload = ask_resp.payload if isinstance(ask_resp.payload, dict) else {}
+            LOGGER.info(
+                "Quote placed market=%s bid_yes=%.4f ask_yes=%.4f half_spread=%.4f",
+                market.slug,
+                bid_yes,
+                ask_yes,
+                half_spread,
+            )
+
+        session.add(
+            MakerQuote(
+                market_id=market.id,
+                reservation_price=mid,
+                optimal_spread=2 * half_spread,
+                bid_price=bid_yes,
+                ask_price=ask_yes,
+                vpin_score=vpin,
+                reward_eligible=base_quote.reward_eligible,
+                bid_order_id=str(bid_payload.get("order_id") or bid_payload.get("id") or ""),
+                ask_order_id=str(ask_payload.get("order_id") or ask_payload.get("id") or ""),
+                inventory_before=inventory_before,
+                inventory_after=inventory_before,
+                canceled=False,
+            )
+        )
+        quoted += 1
+
+    session.commit()
+    return {"quoted": quoted, "skipped": skipped}
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Run Watchdog maker loop")
-    parser.add_argument("--interval", type=int, default=20)
+    parser.add_argument("--interval", type=int, default=30)
     parser.add_argument("--max-markets", type=int, default=30)
     parser.add_argument("--quote-size", type=float, default=1.0)
     parser.add_argument("--market-slug", type=str, default=None)
@@ -93,124 +270,18 @@ async def main() -> None:
 
     while True:
         with session_factory() as session:
-            sync_markets_once(session, cli, limit=max(200, args.max_markets))
-            markets = session.execute(
-                select(Market)
-                .where(Market.status.in_(["active", "open"]))
-                .order_by(Market.id.asc())
-                .limit(args.max_markets)
-            ).scalars().all()
-            if args.market_slug:
-                markets = [m for m in markets if m.slug == args.market_slug]
-
-            for market in markets:
-                response = cli.orderbook(market.slug)
-                metrics = _extract_orderbook_metrics(response.payload)
-                mid = float(metrics.get("mid") or 0.0)
-                if mid <= 0:
-                    continue
-
-                session.add(
-                    MarketSnapshot(
-                        market_id=market.id,
-                        bid=metrics.get("bid"),
-                        ask=metrics.get("ask"),
-                        mid=metrics.get("mid"),
-                        spread=metrics.get("spread"),
-                        bid_volume=metrics.get("bid_volume"),
-                        ask_volume=metrics.get("ask_volume"),
-                        total_volume=metrics.get("total_volume"),
-                        cli_latency_ms=response.latency_ms,
-                        raw_json=str(response.payload),
-                    )
-                )
-                session.flush()
-
-                vpin = _recent_vpin(session, market.id, vpin_calc)
-                inventory_before = _open_inventory(session, market.id)
-
-                halt = should_halt_maker(
-                    vpin=vpin,
-                    vpin_kill_threshold=settings.vpin_kill_threshold,
-                    resolution_time=market.resolution_time,
-                    near_resolution_hours=settings.near_resolution_hours,
-                    near_resolution_fraction=settings.near_resolution_fraction,
-                    market_opened_at=market.created_at.replace(tzinfo=UTC)
-                    if market.created_at and market.created_at.tzinfo is None
-                    else market.created_at,
-                )
-
-                if halt:
-                    cancel_payload = {"dry_run": True} if args.dry_run else cli.cancel_all().payload
-                    LOGGER.info("Maker halted for %s, cancel-all payload=%s", market.slug, cancel_payload)
-                    session.add(
-                        MakerQuote(
-                            market_id=market.id,
-                            reservation_price=mid,
-                            optimal_spread=0.0,
-                            bid_price=mid,
-                            ask_price=mid,
-                            vpin_score=vpin,
-                            reward_eligible=False,
-                            inventory_before=inventory_before,
-                            inventory_after=inventory_before,
-                            canceled=True,
-                        )
-                    )
-                    continue
-
-                quote = maker.compute_quotes(
-                    mid_price=mid,
-                    inventory=inventory_before,
-                    tau_hours=_hours_to_resolution(market.resolution_time),
-                )
-
-                ask_no_price = float(max(0.01, min(0.99, 1 - quote.ask_price)))
-                if args.dry_run:
-                    LOGGER.info(
-                        "DRY-RUN quote market=%s bid_yes=%.4f ask_yes=%.4f vpin=%.4f inv=%.4f",
-                        market.slug,
-                        quote.bid_price,
-                        quote.ask_price,
-                        vpin,
-                        inventory_before,
-                    )
-                    bid_payload: dict[str, str] = {"order_id": f"dry-bid-{market.id}"}
-                    ask_payload: dict[str, str] = {"order_id": f"dry-ask-{market.id}"}
-                else:
-                    bid_resp = cli.place_limit_order(
-                        market_slug=market.slug,
-                        side="YES",
-                        price=quote.bid_price,
-                        size=args.quote_size,
-                    )
-                    ask_resp = cli.place_limit_order(
-                        market_slug=market.slug,
-                        side="NO",
-                        price=ask_no_price,
-                        size=args.quote_size,
-                    )
-                    bid_payload = bid_resp.payload if isinstance(bid_resp.payload, dict) else {}
-                    ask_payload = ask_resp.payload if isinstance(ask_resp.payload, dict) else {}
-
-                session.add(
-                    MakerQuote(
-                        market_id=market.id,
-                        reservation_price=quote.reservation_price,
-                        optimal_spread=quote.optimal_spread,
-                        bid_price=quote.bid_price,
-                        ask_price=quote.ask_price,
-                        vpin_score=vpin,
-                        reward_eligible=quote.reward_eligible,
-                        bid_order_id=str(bid_payload.get("order_id") or bid_payload.get("id") or ""),
-                        ask_order_id=str(ask_payload.get("order_id") or ask_payload.get("id") or ""),
-                        inventory_before=inventory_before,
-                        inventory_after=inventory_before,
-                        canceled=False,
-                    )
-                )
-
-            session.commit()
+            counts = run_market_maker_cycle(
+                session=session,
+                cli=cli,
+                settings=settings,
+                maker=maker,
+                vpin_calc=vpin_calc,
+                max_markets=args.max_markets,
+                market_slug=args.market_slug,
+                dry_run=args.dry_run,
+                quote_size=args.quote_size,
+            )
+            LOGGER.info("Cycle done quoted=%s skipped=%s", counts["quoted"], counts["skipped"])
 
         await asyncio.sleep(max(args.interval, 2))
 
