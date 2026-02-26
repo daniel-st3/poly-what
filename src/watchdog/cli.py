@@ -19,9 +19,11 @@ from watchdog.market_data.polymarket_cli import PolymarketCli
 from watchdog.news.ingest import ingest_news_once_sync
 from watchdog.risk.kelly import EmpiricalKellySizer
 from watchdog.risk.vpin import VPINCalculator
+from watchdog.scripts.run_paper_trading import run_paper_trading_loop
 from watchdog.services.market_sync import sync_markets_once
 from watchdog.services.pipeline import PipelineRunner
 from watchdog.signals.calibration import CalibrationSurfaceService
+from watchdog.signals.telegram_bot import TelegramAlerter
 
 app = typer.Typer(help="Watchdog command-line interface")
 LOGGER = logging.getLogger(__name__)
@@ -137,6 +139,7 @@ def run_pipeline_once_command(max_news: Annotated[int, typer.Option(min=1, max=1
     router = build_router(settings)
     executor = build_executor(settings)
     calibration = CalibrationSurfaceService()
+    alerter = TelegramAlerter(settings)
     sizer = EmpiricalKellySizer(kelly_fraction=settings.kelly_fraction, max_drawdown_p95=settings.max_drawdown_p95)
     vpin_calc = VPINCalculator()
 
@@ -149,6 +152,7 @@ def run_pipeline_once_command(max_news: Annotated[int, typer.Option(min=1, max=1
         calibration=calibration,
         sizer=sizer,
         vpin_calc=vpin_calc,
+        alerter=alerter,
     )
 
     try:
@@ -159,6 +163,23 @@ def run_pipeline_once_command(max_news: Annotated[int, typer.Option(min=1, max=1
 
     typer.echo(
         f"Pipeline done | processed_news={stats.processed_news} generated_signals={stats.generated_signals} executed_trades={stats.executed_trades}"
+    )
+
+
+@app.command("run-paper-trading")
+def run_paper_trading_command(
+    platform: Annotated[str, typer.Option()] = "manifold",
+    virtual_bankroll: Annotated[float, typer.Option()] = 500.0,
+    max_markets: Annotated[int, typer.Option(min=1, max=500)] = 80,
+    iterations: Annotated[int, typer.Option(min=0, max=100000)] = 1,
+) -> None:
+    asyncio.run(
+        run_paper_trading_loop(
+            virtual_bankroll=virtual_bankroll,
+            platform=platform,
+            max_markets=max_markets,
+            iterations=iterations,
+        )
     )
 
 
