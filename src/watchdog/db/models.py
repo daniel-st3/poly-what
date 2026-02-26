@@ -114,6 +114,7 @@ class Trade(Base):
     confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     order_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     is_paper: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="open", nullable=False, index=True)
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

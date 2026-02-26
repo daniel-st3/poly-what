@@ -129,6 +129,29 @@ class PolymarketCli:
             ]
         )
 
+    def create_limit_order(
+        self,
+        token_id: str,
+        side: str,
+        price: float,
+        size: float,
+        post_only: bool = True,
+    ) -> CliResponse:
+        args = [
+            "order",
+            "limit",
+            token_id,
+            "--side",
+            side,
+            "--price",
+            f"{price:.4f}",
+            "--size",
+            f"{size:.4f}",
+        ]
+        if post_only:
+            args.append("--post-only")
+        return self._run(args)
+
     def place_market_order(self, market_slug: str, side: str, size: float) -> CliResponse:
         return self._run(
             [
@@ -147,3 +170,6 @@ class PolymarketCli:
 
     def cancel_all(self) -> CliResponse:
         return self._run(["order", "cancel-all"])
+
+    def cancel_all_orders(self) -> CliResponse:
+        return self.cancel_all()
