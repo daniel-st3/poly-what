@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import asyncio
 import logging
 import uuid
@@ -108,13 +107,19 @@ def _market_from_manifold_row(session, row: ManifoldMarket) -> Market:
     return market
 
 
-async def main() -> None:
-    parser = argparse.ArgumentParser(description="Run $50 live validation experiment")
-    parser.add_argument("--experiment-id", type=str, required=True)
-    parser.add_argument("--bankroll", type=float, default=50.0)
-    parser.add_argument("--platform", type=str, choices=["polymarket", "manifold"], default="polymarket")
-    parser.add_argument("--poll-seconds", type=int, default=15)
-    args = parser.parse_args()
+async def main(
+    experiment_id: str,
+    bankroll: float = 50.0,
+    platform: Literal["polymarket", "manifold"] = "polymarket",
+    poll_seconds: int = 15,
+) -> None:
+    class Args:
+        pass
+    args = Args()
+    args.experiment_id = experiment_id
+    args.bankroll = bankroll
+    args.platform = platform
+    args.poll_seconds = poll_seconds
 
     _ensure_live_enabled()
     if args.bankroll > 50:

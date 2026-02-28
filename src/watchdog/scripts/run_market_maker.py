@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 # VERIFIED
-import argparse
 import asyncio
 import logging
 from datetime import UTC, datetime
@@ -230,15 +229,23 @@ def run_market_maker_cycle(
     return {"quoted": quoted, "skipped": skipped}
 
 
-async def main() -> None:
-    parser = argparse.ArgumentParser(description="Run Watchdog maker loop")
-    parser.add_argument("--interval", type=int, default=30)
-    parser.add_argument("--max-markets", type=int, default=30)
-    parser.add_argument("--quote-size", type=float, default=1.0)
-    parser.add_argument("--market-slug", type=str, default=None)
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--max-inventory", type=float, default=None)
-    args = parser.parse_args()
+async def main(
+    interval: int = 30,
+    max_markets: int = 30,
+    quote_size: float = 1.0,
+    market_slug: str | None = None,
+    dry_run: bool = False,
+    max_inventory: float | None = None,
+) -> None:
+    class Args:
+        pass
+    args = Args()
+    args.interval = interval
+    args.max_markets = max_markets
+    args.quote_size = quote_size
+    args.market_slug = market_slug
+    args.dry_run = dry_run
+    args.max_inventory = max_inventory
 
     settings = get_settings()
     configure_logging(settings)

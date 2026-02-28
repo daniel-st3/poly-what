@@ -237,5 +237,184 @@ def cancel_all_command() -> None:
     typer.echo(str(resp.payload))
 
 
+@app.command("go-live-check")
+def go_live_check_command() -> None:
+    """Check whether paper trading results pass the go-live gate."""
+    settings, _ = _build_runtime()
+    engine = build_engine(settings)
+    session_factory = build_session_factory(engine)
+    from watchdog.backtest.go_live_gate import check_go_live_gate
+
+    with session_factory() as session:
+        passed, reasons = check_go_live_gate(session)
+
+    if passed:
+        typer.echo("[PASS] Go-live gate passed. Ready for live trading.")
+    else:
+        typer.echo("[FAIL] Go-live gate failed:")
+        for r in reasons:
+            typer.echo(f"  - {r}")
+        raise typer.Exit(code=1)
+
+
+@app.command("run-snapshot-collector")
+def run_snapshot_collector_command() -> None:
+    """Run the continuous orderbook snapshot collector daemon."""
+    import asyncio
+
+    from watchdog.scripts.run_snapshot_collector import main as _snapshot_main
+
+    try:
+        asyncio.run(_snapshot_main())
+    except KeyboardInterrupt:
+        typer.echo("Snapshot collector stopped.")
+
+
+@app.command("run-backtest")
+def run_backtest_command(
+    platform: Annotated[str, typer.Option()] = "polymarket",
+    domain: Annotated[str, typer.Option()] = "",
+    output_json: Annotated[Path, typer.Option()] = Path("backtest_results.json"),
+) -> None:
+    """Run backtester against Becker historical data."""
+    from watchdog.scripts.run_backtest import main as _backtest_main
+    
+    _backtest_main(
+        platform=platform,
+        domain=domain or None,
+        strategy_mode="taker",
+        min_trades_per_bucket=100
+    )
+
+
+@app.command("run-market-maker")
+def run_market_maker_command(
+    dry_run: Annotated[bool, typer.Option("--dry-run/--live")] = True,
+) -> None:
+    """Run the Avellaneda-Stoikov market maker loop."""
+    import asyncio
+
+    from watchdog.scripts.run_market_maker import main as _mm_main
+
+    try:
+        asyncio.run(_mm_main(dry_run=dry_run))
+    except KeyboardInterrupt:
+        typer.echo("Market maker stopped.")
+
+
+@app.command("ingest-news-loop")
+def ingest_news_loop_command(
+    interval_seconds: Annotated[int, typer.Option(min=5, max=3600)] = 30,
+) -> None:
+    """Run continuous news ingestion daemon."""
+    import time
+
+    from watchdog.news.ingest import ingest_news_once_sync
+
+    settings, _ = _build_runtime()
+    engine = build_engine(settings)
+    session_factory = build_session_factory(engine)
+    typer.echo(f"Starting news loop every {interval_seconds}s. Ctrl+C to stop.")
+    try:
+        while True:
+            t0 = time.perf_counter()
+            inserted = ingest_news_once_sync(settings, session_factory)
+            elapsed = time.perf_counter() - t0
+            typer.echo(f"Ingested {inserted} items in {elapsed:.2f}s")
+            sleep_for = max(0.0, interval_seconds - elapsed)
+            time.sleep(sleep_for)
+    except KeyboardInterrupt:
+        typer.echo("News loop stopped.")
+
+
+@app.command("run-pipeline-loop")
+def run_pipeline_loop_command(
+    max_news: Annotated[int, typer.Option(min=1, max=100)] = 10,
+    interval_seconds: Annotated[int, typer.Option(min=5, max=3600)] = 60,
+    iterations: Annotated[int, typer.Option(min=0)] = 0,
+) -> None:
+    """Run the full pipeline loop continuously (0 iterations = infinite)."""
+    import asyncio
+    import time
+
+    settings, cli = _build_runtime()
+    try:
+        cli.startup_check()
+    except (PolymarketCliError, GeoblockError) as exc:
+        typer.echo(f"Pipeline loop halted: {exc}")
+        raise typer.Exit(code=1) from None
+
+    engine = build_engine(settings)
+    session_factory = build_session_factory(engine)
+    router = build_router(settings)
+    executor = build_executor(settings)
+    calibration = CalibrationSurfaceService()
+    alerter = TelegramAlerter(settings)
+    sizer = EmpiricalKellySizer(
+        kelly_fraction=settings.kelly_fraction,
+        max_drawdown_p95=settings.max_drawdown_p95,
+    )
+    vpin_calc = VPINCalculator()
+    runner = PipelineRunner(
+        settings=settings,
+        session_factory=session_factory,
+        cli=cli,
+        router=router,
+        executor=executor,
+        calibration=calibration,
+        sizer=sizer,
+        vpin_calc=vpin_calc,
+        alerter=alerter,
+    )
+
+    n = 0
+    typer.echo(f"Pipeline loop started. iterations={'∞' if iterations == 0 else iterations}")
+    try:
+        while iterations == 0 or n < iterations:
+            t0 = time.perf_counter()
+            try:
+                stats = asyncio.run(runner.run_once(max_news=max_news))
+            except PolymarketCliError as exc:
+                typer.echo(f"Pipeline iteration failed: {exc}")
+                stats = None
+            if stats:
+                typer.echo(
+                    f"[iter {n+1}] news={stats.processed_news} "
+                    f"signals={stats.generated_signals} trades={stats.executed_trades}"
+                )
+            elapsed = time.perf_counter() - t0
+            n += 1
+            sleep_for = max(0.0, interval_seconds - elapsed)
+            time.sleep(sleep_for)
+    except KeyboardInterrupt:
+        typer.echo("Pipeline loop stopped.")
+
+
+@app.command("run-live-validation")
+def run_live_validation_command(
+    experiment_id: Annotated[str, typer.Option()] = "",
+    bankroll: Annotated[float, typer.Option(min=1.0)] = 50.0,
+    platform: Annotated[str, typer.Option()] = "polymarket",
+) -> None:
+    """Run the $50 live validation experiment."""
+    import asyncio
+
+    from watchdog.scripts.run_live_validation import main as _lv_main
+
+    try:
+        asyncio.run(
+            _lv_main(
+                experiment_id=experiment_id or "default_exp",
+                bankroll=bankroll,
+                platform=platform,
+            )
+        )
+    except KeyboardInterrupt:
+        typer.echo("Live validation stopped.")
+    except Exception as exc:
+        typer.echo(f"Live validation failed: {exc}")
+        raise typer.Exit(code=1) from None
+
+
 if __name__ == "__main__":
     app()

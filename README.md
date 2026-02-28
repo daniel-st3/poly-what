@@ -107,8 +107,13 @@ Goal: validate latency and slippage, not maximize PnL.
 watchdog init-db
 watchdog build-calibration --dataset-path /path/to/becker.parquet
 watchdog run-paper-trading --platform manifold --virtual-bankroll 500 --iterations 1
-python -m watchdog.scripts.run_backtest --platform polymarket
-python -m watchdog.scripts.run_live_validation --experiment-id feb2026_v1 --bankroll 50 --platform manifold
+watchdog go-live-check
+watchdog run-snapshot-collector
+watchdog run-backtest --platform polymarket --domain politics
+watchdog run-market-maker --dry-run
+watchdog ingest-news-loop --interval-seconds 30
+watchdog run-pipeline-loop --iterations 0 --interval-seconds 60
+watchdog run-live-validation --experiment-id feb2026_v1 --bankroll 50
 ```
 
 ## Scripts

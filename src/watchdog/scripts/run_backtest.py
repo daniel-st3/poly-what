@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,13 +52,19 @@ def _build_synthetic_inputs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
     return train, oos, surface
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Run Watchdog OOS backtest (2024 train / 2025 test)")
-    parser.add_argument("--platform", type=str, default="polymarket")
-    parser.add_argument("--domain", type=str, default=None)
-    parser.add_argument("--strategy-mode", type=str, choices=["taker", "maker"], default="taker")
-    parser.add_argument("--min-trades-per-bucket", type=int, default=100)
-    args = parser.parse_args()
+def main(
+    platform: str = "polymarket",
+    domain: str | None = None,
+    strategy_mode: str = "taker",
+    min_trades_per_bucket: int = 100,
+) -> None:
+    class Args:
+        pass
+    args = Args()
+    args.platform = platform
+    args.domain = domain
+    args.strategy_mode = strategy_mode
+    args.min_trades_per_bucket = min_trades_per_bucket
 
     settings = get_settings()
     try:
