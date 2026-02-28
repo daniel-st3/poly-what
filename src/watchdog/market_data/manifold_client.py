@@ -181,12 +181,18 @@ class ManifoldClient:
         if ask <= bid:
             ask = min(0.99, bid + 0.01)
 
+        # Synthetic LMSR depth proxy used for paper-mode VPIN parity.
+        bid_volume = 500.0
+        ask_volume = 500.0
+
         return {
             "bid": bid,
             "ask": ask,
             "mid": mid,
             "spread": ask - bid,
             "probability": mid,
+            "bid_volume": bid_volume,
+            "ask_volume": ask_volume,
         }
 
     def place_bet(self, market_id: str, outcome: str, amount: float) -> dict[str, Any]:

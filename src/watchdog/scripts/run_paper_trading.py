@@ -17,6 +17,7 @@ from watchdog.db.models import Market, Signal, Trade
 from watchdog.db.session import build_engine, build_session_factory
 from watchdog.market_data.manifold_client import ManifoldAPIError, ManifoldClient
 from watchdog.market_data.polymarket_cli import PolymarketCli
+from watchdog.risk.vpin import TradeFlow, VPINCalculator
 from watchdog.services.pipeline import _extract_orderbook_metrics, _hours_to_resolution
 from watchdog.signals.calibration import CalibrationSurfaceService
 
@@ -220,6 +221,7 @@ async def run_paper_trading_loop(
         polymarket.startup_check()
 
     calibration = CalibrationSurfaceService()
+    vpin_calc = VPINCalculator()
     bankroll = float(virtual_bankroll)
     iteration = 0
 
@@ -247,6 +249,29 @@ async def run_paper_trading_loop(
                 db_market = _upsert_market(session, market_row)
 
                 p_market = float(market_row["probability"])
+                vpin_score: float | None = None
+                if platform == "manifold" and manifold is not None:
+                    try:
+                        synthetic_book = await asyncio.to_thread(manifold.get_orderbook, market_row["market_id"])
+                    except (ManifoldAPIError, ValueError) as exc:
+                        LOGGER.warning(
+                            "Skipping %s: failed synthetic orderbook fetch (%s)",
+                            market_row["slug"],
+                            exc,
+                        )
+                        continue
+
+                    p_market = float(synthetic_book.get("mid") or p_market)
+                    p_market = max(0.01, min(0.99, p_market))
+                    bid_volume = float(synthetic_book.get("bid_volume") or 0.0)
+                    ask_volume = float(synthetic_book.get("ask_volume") or 0.0)
+                    vpin_score = vpin_calc.compute(
+                        [
+                            TradeFlow(side="SELL", volume=bid_volume),
+                            TradeFlow(side="BUY", volume=ask_volume),
+                        ]
+                    )
+
                 result = calibration.calibrate(
                     market_probability=p_market,
                     hours_to_resolution=_hours_to_resolution(db_market.resolution_time),
@@ -262,9 +287,15 @@ async def run_paper_trading_loop(
                     divergence=divergence,
                     signal_type=f"paper_{platform}",
                     calibration_adjustments=result.adjustment,
+                    vpin_score=vpin_score,
                     should_trade=False,
                     rationale="divergence_below_threshold",
                 )
+
+                if vpin_score is not None and vpin_score >= settings.vpin_kill_threshold:
+                    signal.rationale = "vpin_kill_switch"
+                    session.add(signal)
+                    continue
 
                 if divergence < settings.min_divergence_paper:
                     session.add(signal)

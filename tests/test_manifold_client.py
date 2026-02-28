@@ -58,3 +58,15 @@ def test_non_2xx_raises_api_error(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(ManifoldAPIError):
         client.get_markets(limit=1)
+
+
+def test_get_orderbook_returns_fixed_synthetic_depths(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = ManifoldClient(base_url="https://api.manifold.markets/v0")
+    monkeypatch.setattr(client, "get_market", lambda market_id: {"id": market_id, "probability": 0.55})
+
+    book = client.get_orderbook("mkt-123")
+
+    assert book["mid"] == 0.55
+    assert book["bid_volume"] == 500.0
+    assert book["ask_volume"] == 500.0
+    assert book["ask"] > book["bid"]
