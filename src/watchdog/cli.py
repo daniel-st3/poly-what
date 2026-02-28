@@ -44,8 +44,15 @@ def init_db_command() -> None:
 
 
 @app.command("healthcheck")
-def healthcheck_command() -> None:
-    settings, cli = _build_runtime()
+def healthcheck_command(
+    mode: Annotated[str, typer.Option(help="Select check mode")] = "paper"
+) -> None:
+    if mode not in ("paper", "live"):
+        typer.echo(f"Invalid mode: {mode}")
+        raise typer.Exit(code=1)
+
+    settings = get_settings()
+    configure_logging(settings)
     failed = False
 
     typer.echo(f"[INFO] LIVE_TRADING={settings.enable_live_trading}")
@@ -59,22 +66,37 @@ def healthcheck_command() -> None:
         typer.echo(f"[FAIL] DB connection ({exc})")
         failed = True
 
-    try:
-        version = cli.check_version()
-        typer.echo(f"[OK]  polymarket CLI version {version}")
-    except PolymarketCliError as exc:
-        message = str(exc).lower()
-        if "not found" in message:
-            typer.echo("[FAIL] polymarket CLI not found")
-        else:
-            typer.echo(f"[FAIL] polymarket CLI version check failed ({exc})")
-        failed = True
-
     if settings.anthropic_api_key or settings.openai_api_key:
         typer.echo("[OK]  LLM API key configured")
     else:
         typer.echo("[FAIL] missing LLM API key (set ANTHROPIC_API_KEY or OPENAI_API_KEY)")
         failed = True
+
+    if mode == "live":
+        cli = PolymarketCli(settings)
+        try:
+            version = cli.check_version()
+            typer.echo(f"[OK]  polymarket CLI version {version}")
+        except PolymarketCliError as exc:
+            message = str(exc).lower()
+            if "not found" in message:
+                typer.echo("[FAIL] polymarket CLI not found")
+            else:
+                typer.echo(f"[FAIL] polymarket CLI version check failed ({exc})")
+            failed = True
+    else:
+        # paper mode
+        if settings.manifold_api_key:
+            typer.echo("[OK]  MANIFOLD_API_KEY configured")
+        else:
+            typer.echo("[FAIL] missing MANIFOLD_API_KEY")
+            failed = True
+
+        if settings.manifold_user_id:
+            typer.echo("[OK]  MANIFOLD_USER_ID configured")
+        else:
+            typer.echo("[FAIL] missing MANIFOLD_USER_ID")
+            failed = True
 
     if settings.telegram_bot_token:
         typer.echo("[OK]  TELEGRAM_BOT_TOKEN configured")
