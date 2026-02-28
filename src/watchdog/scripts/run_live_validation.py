@@ -10,6 +10,7 @@ from typing import Literal
 import numpy as np
 from sqlalchemy import select
 
+from watchdog.backtest.go_live_gate import check_go_live_gate
 from watchdog.core.config import get_settings
 from watchdog.core.exceptions import LiveTradingDisabledError
 from watchdog.core.logging import configure_logging
@@ -125,6 +126,14 @@ async def main() -> None:
     engine = build_engine(settings)
     init_db(engine)
     session_factory = build_session_factory(engine)
+
+    with session_factory() as session:
+        passed_gate, gate_reasons = check_go_live_gate(session)
+        if not passed_gate:
+            for reason in gate_reasons:
+                LOGGER.error("Gate failed: %s", reason)
+            raise SystemExit(1)
+        LOGGER.info("Live validation gate passed successfully.")
 
     platform: Literal["polymarket", "manifold"] = args.platform
     cli = PolymarketCli(settings) if platform == "polymarket" else None
