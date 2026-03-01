@@ -193,6 +193,146 @@ class PipelineRunner:
                 exc,
             )
 
+    async def _process_volume_spikes(
+        self, session: Session, stats: PipelineStats, experiment_id: str
+    ) -> None:
+        """Process volume spike news events with a fast path (skip router, lower threshold)."""
+        VOLUME_SPIKE_MIN_DIVERGENCE = 0.10
+
+        spike_news = (
+            session.execute(
+                select(NewsEvent)
+                .where(
+                    NewsEvent.processed.is_(False),
+                    NewsEvent.source == "polymarket_volume_spike",
+                )
+                .order_by(NewsEvent.received_at.asc())
+                .limit(20)
+            )
+            .scalars()
+            .all()
+        )
+
+        if not spike_news:
+            return
+
+        LOGGER.info("Processing %d volume spike events (fast path)", len(spike_news))
+
+        for news_row in spike_news:
+            stats.processed_news += 1
+            pipeline_id = uuid.uuid4().hex[:12]
+            t0 = time.perf_counter()
+            ts_news_received = news_row.received_at
+
+            # Extract slug from raw_text (format: "VOLUME SPIKE: {slug} | ...")
+            raw = news_row.raw_text or ""
+            slug_part = raw.split("|")[0].replace("VOLUME SPIKE:", "").strip() if raw else ""
+
+            # Try to find a matching market
+            market = None
+            if slug_part:
+                market = session.execute(
+                    select(Market).where(Market.slug == slug_part)
+                ).scalar_one_or_none()
+
+            if market is None:
+                # Try matching by headline keyword in existing markets
+                markets = session.execute(
+                    select(Market).where(Market.status.in_(["open", "active"])).limit(50)
+                ).scalars().all()
+                if markets:
+                    market = markets[0]  # Use first available as fallback
+
+            if market is None or not market.yes_token_id:
+                news_row.processed = True
+                session.commit()
+                continue
+
+            # Fetch orderbook directly (skip router LLM)
+            orderbook_resp = self.cli.orderbook(market.yes_token_id)
+            metrics = _extract_orderbook_metrics(orderbook_resp.payload)
+            market_prob = float(metrics.get("mid") or 0.5)
+
+            snapshot = MarketSnapshot(
+                market_id=market.id,
+                bid=metrics.get("bid"),
+                ask=metrics.get("ask"),
+                mid=metrics.get("mid"),
+                spread=metrics.get("spread"),
+                bid_volume=metrics.get("bid_volume"),
+                ask_volume=metrics.get("ask_volume"),
+                total_volume=metrics.get("total_volume"),
+                cli_latency_ms=orderbook_resp.latency_ms,
+                raw_json=str(orderbook_resp.payload),
+            )
+            session.add(snapshot)
+
+            calib = self.calibration.calibrate(
+                market_probability=market_prob,
+                hours_to_resolution=_hours_to_resolution(market.resolution_time),
+                domain=market.domain,
+                sentiment_score=float(news_row.sentiment_score or 0.0),
+            )
+
+            divergence = abs(calib.model_probability - market_prob)
+
+            # Extract volume info from raw_text for logging
+            vol_str = "unknown"
+            for part in raw.split("|"):
+                if "24h_vol" in part:
+                    vol_str = part.strip()
+                    break
+
+            LOGGER.warning(
+                "VOLUME SPIKE DETECTED: %s 24h_vol=%s",
+                market.slug,
+                vol_str,
+            )
+
+            signal = Signal(
+                market_id=market.id,
+                news_event_id=news_row.id,
+                model_probability=calib.model_probability,
+                market_probability=market_prob,
+                divergence=divergence,
+                signal_type="volume_spike",
+                router_confidence=1.0,  # No router needed for volume spikes
+                calibration_adjustments=calib.adjustment,
+                vpin_score=None,
+                experiment_id=experiment_id,
+                should_trade=False,
+                rationale=f"Volume spike fast-path: {raw[:200]}",
+            )
+
+            # Use lower divergence threshold for volume spikes (0.10 vs default 0.15)
+            if divergence >= VOLUME_SPIKE_MIN_DIVERGENCE:
+                # Go straight to executor (skip router)
+                executor_ctx = {
+                    "market_slug": market.slug,
+                    "market_probability": market_prob,
+                    "model_probability": calib.model_probability,
+                    "divergence": divergence,
+                    "router_confidence": 1.0,
+                    "vpin": 0.0,
+                    "orderbook": metrics,
+                    "market_question": market.question,
+                    "resolution_time": market.resolution_time.isoformat() if market.resolution_time else None,
+                    "min_divergence": VOLUME_SPIKE_MIN_DIVERGENCE,
+                    "signal_type": "volume_spike",
+                }
+                executor_decision = await self.executor.decide(executor_ctx)
+                signal.executor_confidence = executor_decision.confidence
+                signal.rationale = (signal.rationale or "") + f" | {executor_decision.rationale}"
+
+                if executor_decision.trade and executor_decision.side in {"YES", "NO"}:
+                    signal.should_trade = True
+                    stats.executed_trades += 1
+
+            session.add(signal)
+            stats.generated_signals += 1
+            news_row.processed = True
+            session.commit()
+
     async def run_once(self, max_news: int = 10, experiment_id: str = "exp50") -> PipelineStats:
         stats = PipelineStats()
 
@@ -201,6 +341,10 @@ class PipelineRunner:
             LOGGER.info("Synced %d markets", synced)
             loaded = self.calibration.load_from_db(session)
             LOGGER.info("Loaded %d calibration cells", loaded)
+
+            # --- Volume spike fast path (skip router) ---
+            await self._process_volume_spikes(session, stats, experiment_id)
+
 
             pending_news = session.execute(
                 select(NewsEvent).where(NewsEvent.processed.is_(False)).order_by(NewsEvent.received_at.asc()).limit(max_news)

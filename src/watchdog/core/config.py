@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     reddit_client_secret: str | None = None
     reddit_user_agent: str = "watchdog/0.1"
 
+    # New high-signal sources
+    marketaux_enabled: bool = True
+    marketaux_api_key: str | None = None
+    polymarket_volume_spike_enabled: bool = True
+    gdelt_gkg_enabled: bool = True
+
     brave_api_key: str | None = None
     deepseek_api_key: str | None = None
     gemini_api_key: str | None = None

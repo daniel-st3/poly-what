@@ -11,6 +11,9 @@ import praw
 
 from watchdog.core.config import Settings
 from watchdog.news.models import NewsItem
+from watchdog.news.source_gdelt_gkg import fetch_gdelt_gkg
+from watchdog.news.source_marketaux import fetch_marketaux
+from watchdog.news.source_polymarket_volume import fetch_polymarket_volume_spikes
 
 LOGGER = logging.getLogger(__name__)
 
@@ -139,7 +142,15 @@ async def fetch_reddit(settings: Settings, limit_per_subreddit: int = 10) -> lis
 
 
 async def collect_news_once(settings: Settings) -> list[NewsItem]:
-    tasks = [fetch_gdelt(settings), fetch_rss(settings), fetch_reddit(settings)]
+    tasks = [
+        fetch_gdelt(settings),
+        fetch_rss(settings),
+        fetch_reddit(settings),
+        # New high-signal sources
+        fetch_marketaux(settings),
+        fetch_polymarket_volume_spikes(settings),
+        fetch_gdelt_gkg(settings),
+    ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     merged: list[NewsItem] = []
@@ -155,6 +166,7 @@ async def collect_news_once(settings: Settings) -> list[NewsItem]:
         deduped[(item.headline, item.source)] = item
 
     return list(deduped.values())
+
 
 
 async def brave_fallback(settings: Settings, query: str) -> list[dict[str, Any]]:

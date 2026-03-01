@@ -55,6 +55,7 @@ class FakeCli:
                     "domain": "politics",
                     "status": "active",
                     "endDate": datetime(2026, 11, 1, tzinfo=UTC).isoformat(),
+                    "yesTokenId": "yes-token-mkt-1",
                 }
             ],
             latency_ms=3,
@@ -74,7 +75,7 @@ class FakeCli:
 
 
 class FastPipelineRunner(PipelineRunner):
-    async def _update_telemetry_price_after_delay(self, telemetry_id, market_slug, delay_seconds, field_name, experiment_id):
+    async def _update_telemetry_price_after_delay(self, telemetry_id, token_id, delay_seconds, field_name, experiment_id):
         with self.session_factory() as session:
             row = session.get(Telemetry, telemetry_id)
             if row is not None:

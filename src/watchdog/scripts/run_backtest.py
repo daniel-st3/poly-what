@@ -93,9 +93,14 @@ def main(
             start_year=2025,
             end_year=2025,
         )
-    except FileNotFoundError:
-        print("Becker dataset not found. Falling back to synthetic backtest fixtures.")
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"Becker dataset issue ({exc}). Falling back to synthetic backtest fixtures.")
         train_markets, oos_markets, calibration_surface = _build_synthetic_inputs()
+
+    if oos_markets.empty:
+        print("OOS markets empty after loading. Falling back to synthetic backtest fixtures.")
+        train_markets, oos_markets, calibration_surface = _build_synthetic_inputs()
+
     oos_markets["pre_registered"] = True
 
     backtester = Backtester(
