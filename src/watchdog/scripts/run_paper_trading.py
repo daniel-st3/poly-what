@@ -325,6 +325,22 @@ async def run_paper_trading_loop(
                     )
                     continue
 
+                # --- Filter 3: Single-position guard (no duplicate trades) ---
+                existing_open_trade = session.execute(
+                    select(Trade).where(
+                        Trade.market_id == db_market.id,
+                        Trade.status == "open",
+                        Trade.is_paper.is_(True),
+                    )
+                ).scalars().first()
+                if existing_open_trade:
+                    LOGGER.debug(
+                        "Skipping %s: already have open position (trade_id=%d)",
+                        market_row["slug"],
+                        existing_open_trade.id,
+                    )
+                    continue
+
                 # Volume multiplier: high-volume markets accept lower divergence
                 volume_multiplier = 1.0
                 if volume_24h > 10000:
