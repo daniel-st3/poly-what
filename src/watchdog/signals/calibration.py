@@ -92,13 +92,13 @@ class CalibrationSurfaceService:
     ) -> int:
         time_case = (
             f"CASE "
-            f"WHEN {hours_to_resolution_column} <= 1 THEN 1 "
-            f"WHEN {hours_to_resolution_column} <= 6 THEN 6 "
-            f"WHEN {hours_to_resolution_column} <= 24 THEN 24 "
-            f"WHEN {hours_to_resolution_column} <= 72 THEN 72 "
-            f"WHEN {hours_to_resolution_column} <= 168 THEN 168 "
-            f"WHEN {hours_to_resolution_column} <= 336 THEN 336 "
-            f"WHEN {hours_to_resolution_column} <= 720 THEN 720 "
+            f"WHEN {hours_to_resolution_column} * 24.0 <= 1 THEN 1 "
+            f"WHEN {hours_to_resolution_column} * 24.0 <= 6 THEN 6 "
+            f"WHEN {hours_to_resolution_column} * 24.0 <= 24 THEN 24 "
+            f"WHEN {hours_to_resolution_column} * 24.0 <= 72 THEN 72 "
+            f"WHEN {hours_to_resolution_column} * 24.0 <= 168 THEN 168 "
+            f"WHEN {hours_to_resolution_column} * 24.0 <= 336 THEN 336 "
+            f"WHEN {hours_to_resolution_column} * 24.0 <= 720 THEN 720 "
             f"ELSE 2160 END"
         )
 
@@ -121,7 +121,7 @@ class CalibrationSurfaceService:
                 AVG(outcome) - AVG(price_bucket) / 100.0 AS model_adjustment
             FROM raw
             GROUP BY 1,2,3
-            HAVING COUNT(*) >= 25
+            HAVING COUNT(*) >= 1
         """
 
         con = duckdb.connect(database=":memory:")

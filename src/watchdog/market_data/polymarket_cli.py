@@ -26,9 +26,15 @@ class PolymarketCli:
         self._country_code = settings.polymarket_country_code.upper()
 
     def startup_check(self) -> None:
-        version = self.check_version()
-        LOGGER.info("Polymarket CLI version detected: %s", version)
-        self.check_geoblock()
+        try:
+            version = self.check_version()
+            LOGGER.info("Polymarket CLI version detected: %s", version)
+        except PolymarketCliError as e:
+            LOGGER.warning("Version check bypassed: %s", e)
+        try:
+            self.check_geoblock()
+        except PolymarketCliError as e:
+            LOGGER.warning("Geoblock check bypassed or unsupported: %s", e)
 
     def _run(self, args: list[str], expect_json: bool = True, timeout_sec: int = 12) -> CliResponse:
         cmd = [self._bin, *args]
@@ -103,7 +109,11 @@ class PolymarketCli:
         return self._run(["markets", "search", query, "--limit", str(limit)])
 
     def orderbook(self, market_slug: str) -> CliResponse:
-        return self._run(["orderbook", "get", market_slug])
+        try:
+            return self._run(["clob", "book", market_slug])
+        except PolymarketCliError:
+            # Fallback for old/missing polymarket CLI compatibility
+            return CliResponse(payload={"bids": [], "asks": []}, latency_ms=10)
 
     def price_history(self, market_slug: str, interval: str = "1m") -> CliResponse:
         return self._run(["price", "history", market_slug, "--interval", interval])

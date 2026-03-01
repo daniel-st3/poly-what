@@ -68,31 +68,27 @@ class OpenAIRouterAgent(BaseRouterAgent):
 
         payload = {
             "model": self.model,
-            "input": [
+            "messages": [
                 {
                     "role": "system",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "You are a prediction market relevance router. " + schema_instruction,
-                        }
-                    ],
+                    "content": "You are a prediction market relevance router. " + schema_instruction,
                 },
                 {
                     "role": "user",
-                    "content": [{"type": "text", "text": json.dumps(user_prompt)}],
+                    "content": json.dumps(user_prompt),
                 },
             ],
             "temperature": 0,
+            "response_format": { "type": "json_object" }
         }
 
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.post("https://api.openai.com/v1/responses", json=payload, headers=headers)
+            response = await client.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
 
-        text_out = _extract_text_from_openai_response(data)
+        text_out = data.get("choices", [{}])[0].get("message", {}).get("content", "{}")
         try:
             return RouterDecision.model_validate_json(text_out)
         except Exception as exc:
@@ -104,15 +100,6 @@ class OpenAIRouterAgent(BaseRouterAgent):
                 confidence=0.0,
                 rationale="Invalid router response JSON",
             )
-
-
-def _extract_text_from_openai_response(data: dict) -> str:
-    output = data.get("output", [])
-    for item in output:
-        for content in item.get("content", []):
-            if content.get("type") == "output_text":
-                return str(content.get("text", "")).strip()
-    return "{}"
 
 
 def build_router(settings: Settings) -> BaseRouterAgent:

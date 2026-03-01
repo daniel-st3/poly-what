@@ -149,14 +149,14 @@ class PipelineRunner:
     async def _update_telemetry_price_after_delay(
         self,
         telemetry_id: int,
-        market_slug: str,
+        token_id: str,
         delay_seconds: int,
         field_name: str,
         experiment_id: str,
     ) -> None:
         await asyncio.sleep(delay_seconds)
         try:
-            response = await asyncio.to_thread(self.cli.orderbook, market_slug)
+            response = await asyncio.to_thread(self.cli.orderbook, token_id)
             metrics = _extract_orderbook_metrics(response.payload)
             price = float(metrics.get("mid") or 0.5)
 
@@ -246,7 +246,9 @@ class PipelineRunner:
                     if market is None:
                         continue
 
-                    orderbook_resp = self.cli.orderbook(slug)
+                    if not market.yes_token_id:
+                        continue
+                    orderbook_resp = self.cli.orderbook(market.yes_token_id)
                     metrics = _extract_orderbook_metrics(orderbook_resp.payload)
                     market_prob = float(metrics.get("mid") or 0.5)
 
@@ -418,7 +420,7 @@ class PipelineRunner:
                     task_1m = asyncio.create_task(
                         self._update_telemetry_price_after_delay(
                             telemetry_id=telemetry.id,
-                            market_slug=slug,
+                            token_id=market.yes_token_id,
                             delay_seconds=60,
                             field_name="market_price_1m",
                             experiment_id=experiment_id,
@@ -427,7 +429,7 @@ class PipelineRunner:
                     task_5m = asyncio.create_task(
                         self._update_telemetry_price_after_delay(
                             telemetry_id=telemetry.id,
-                            market_slug=slug,
+                            token_id=market.yes_token_id,
                             delay_seconds=300,
                             field_name="market_price_5m",
                             experiment_id=experiment_id,
