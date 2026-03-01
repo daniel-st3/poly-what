@@ -415,6 +415,104 @@ def run_live_validation_command(
         typer.echo(f"Live validation failed: {exc}")
         raise typer.Exit(code=1) from None
 
+@app.command("analyze-paper-trades")
+def analyze_paper_trades_command() -> None:
+    """Analyze paper trading performance by strategy."""
+    import math
+    from statistics import mean, stdev
+
+    from sqlalchemy import select
+
+    from watchdog.db.models import Market, Trade
+
+    settings = get_settings()
+    engine = build_engine(settings)
+    SessionFactory = build_session_factory(engine)
+
+    with SessionFactory() as session:
+        rows = session.execute(
+            select(Trade, Market)
+            .join(Market, Trade.market_id == Market.id)
+            .where(Trade.is_paper.is_(True))
+        ).all()
+
+    if not rows:
+        typer.echo("No paper trades found.")
+        raise typer.Exit()
+
+    # Group by strategy
+    strategies: dict[str, list[dict]] = {}
+    for trade, market in rows:
+        strat = trade.strategy or "calibration"
+        if strat not in strategies:
+            strategies[strat] = []
+
+        pnl = trade.pnl or 0.0
+        strategies[strat].append({
+            "slug": market.slug,
+            "domain": market.domain,
+            "side": trade.side,
+            "size": trade.size,
+            "entry": trade.entry_price,
+            "exit": trade.exit_price,
+            "pnl": pnl,
+            "status": trade.status,
+        })
+
+    # Summary table header
+    typer.echo("")
+    header = f"{'Strategy':<20} {'Trades':>6} {'Open':>5} {'Closed':>6} {'Win%':>6} {'Avg PnL':>9} {'Sharpe':>7} {'Max DD':>8}"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+
+    for strat, trades in sorted(strategies.items()):
+        total = len(trades)
+        closed = [t for t in trades if t["status"] == "closed"]
+        open_trades = [t for t in trades if t["status"] == "open"]
+
+        if closed:
+            pnls = [t["pnl"] for t in closed]
+            wins = sum(1 for p in pnls if p > 0)
+            win_pct = (wins / len(pnls)) * 100
+            avg_pnl = mean(pnls)
+            sharpe = (mean(pnls) / stdev(pnls) * math.sqrt(252)) if len(pnls) > 1 and stdev(pnls) > 0 else 0.0
+
+            # Max drawdown
+            cumulative = 0.0
+            peak = 0.0
+            max_dd = 0.0
+            for p in pnls:
+                cumulative += p
+                if cumulative > peak:
+                    peak = cumulative
+                dd = peak - cumulative
+                if dd > max_dd:
+                    max_dd = dd
+
+            typer.echo(
+                f"{strat:<20} {total:>6} {len(open_trades):>5} {len(closed):>6} "
+                f"{win_pct:>5.1f}% ${avg_pnl:>7.2f} {sharpe:>7.2f} -${max_dd:>6.2f}"
+            )
+        else:
+            typer.echo(
+                f"{strat:<20} {total:>6} {len(open_trades):>5} {len(closed):>6} "
+                f"{'  -':>6} {'  -':>9} {'  -':>7} {'  -':>8}"
+            )
+
+    # Domain breakdown
+    typer.echo("")
+    typer.echo("Domain Breakdown:")
+    domains: dict[str, int] = {}
+    for trades in strategies.values():
+        for t in trades:
+            d = t["domain"] or "unknown"
+            domains[d] = domains.get(d, 0) + 1
+
+    for domain, count in sorted(domains.items(), key=lambda x: -x[1]):
+        typer.echo(f"  {domain:<20} {count} trades")
+
+    typer.echo("")
+
 
 if __name__ == "__main__":
     app()

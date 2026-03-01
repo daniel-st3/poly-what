@@ -79,6 +79,17 @@ class Settings(BaseSettings):
     polymarket_private_key: str | None = None
     live_bankroll_usdc: float = Field(default=50.0, ge=1.0, le=1000000.0)
     paper_bankroll_usdc: float = Field(default=500.0, ge=1.0, le=1000000.0)
+
+    # Exit management
+    take_profit_pct: float = Field(default=0.30, ge=0.01, le=5.0)
+    stop_loss_pct: float = Field(default=0.15, ge=0.01, le=1.0)
+    max_hold_days: int = Field(default=7, ge=1, le=365)
+
+    # Arbitrage
+    enable_arbitrage: bool = True
+    min_arb_spread: float = Field(default=0.03, ge=0.01, le=0.50)
+    max_arb_position_size: float = Field(default=20.0, ge=1.0, le=1000.0)
+
     experiment_id: str = "feb2026_v1"
 
 

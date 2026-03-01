@@ -117,6 +117,7 @@ class Trade(Base):
     status: Mapped[str] = mapped_column(String(16), default="open", nullable=False, index=True)
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    strategy: Mapped[str | None] = mapped_column(String(32), nullable=True, default="calibration", index=True)
 
     market: Mapped[Market] = relationship(back_populates="trades")
 

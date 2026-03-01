@@ -20,6 +20,8 @@ from watchdog.market_data.polymarket_cli import PolymarketCli
 from watchdog.risk.vpin import TradeFlow, VPINCalculator
 from watchdog.services.pipeline import _extract_orderbook_metrics, _hours_to_resolution
 from watchdog.signals.calibration import CalibrationSurfaceService
+from watchdog.strategies.arbitrage_detector import ArbitrageDetector
+from watchdog.strategies.exit_manager import ExitManager
 
 LOGGER = logging.getLogger(__name__)
 
@@ -222,6 +224,15 @@ async def run_paper_trading_loop(
 
     calibration = CalibrationSurfaceService()
     vpin_calc = VPINCalculator()
+    exit_manager = ExitManager(
+        take_profit_pct=settings.take_profit_pct,
+        stop_loss_pct=settings.stop_loss_pct,
+        max_hold_days=settings.max_hold_days,
+    )
+    arb_detector = ArbitrageDetector(
+        min_arb_spread=settings.min_arb_spread,
+        max_arb_position_size=settings.max_arb_position_size,
+    )
     bankroll = float(virtual_bankroll)
     iteration = 0
 
@@ -232,6 +243,7 @@ async def run_paper_trading_loop(
         markets_checked = 0
         signals_generated = 0
         bets_placed = 0
+        exits_closed = 0
 
         with session_factory() as session:
             calibration.load_from_db(session)
@@ -243,12 +255,87 @@ async def run_paper_trading_loop(
             polymarket=polymarket,
         )
 
+        # --- Check exits on open positions FIRST ---
+        with session_factory() as session:
+            current_prices: dict[int, float] = {}
+            for mr in market_rows:
+                db_m = session.execute(
+                    select(Market).where(Market.slug == mr["slug"])
+                ).scalar_one_or_none()
+                if db_m is not None:
+                    current_prices[db_m.id] = float(mr["probability"])
+
+            exits_closed = exit_manager.check_exits(
+                session,
+                current_prices=current_prices,
+                platform=platform,
+                manifold=manifold,
+                polymarket=polymarket,
+            )
+            try:
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+
+        # --- Main market scan ---
         with session_factory() as session:
             for market_row in market_rows:
                 markets_checked += 1
                 db_market = _upsert_market(session, market_row)
 
                 p_market = float(market_row["probability"])
+
+                # --- Check for arbitrage first (highest priority) ---
+                if settings.enable_arbitrage:
+                    arb = arb_detector.check_single_market_arb(
+                        market_row["slug"],
+                        yes_price=p_market,
+                        no_price=1 - p_market,
+                    )
+                    if arb is not None:
+                        stake_per_side = min(
+                            bankroll * 0.05,
+                            settings.max_arb_position_size,
+                        )
+                        session.add(Signal(
+                            market_id=db_market.id,
+                            model_probability=p_market,
+                            market_probability=p_market,
+                            divergence=arb["profit_pct"] / 100,
+                            signal_type="arbitrage",
+                            should_trade=True,
+                            rationale=f"yes_no_sum={arb['total_cost']:.4f}",
+                        ))
+                        session.flush()
+                        session.add(Trade(
+                            market_id=db_market.id,
+                            side="YES",
+                            size=stake_per_side,
+                            entry_price=p_market,
+                            kelly_fraction=0.05,
+                            order_id=f"arb-yes-{market_row['slug']}-{iteration}",
+                            is_paper=True,
+                            status="open",
+                            opened_at=datetime.now(UTC),
+                            strategy="arbitrage",
+                        ))
+                        session.add(Trade(
+                            market_id=db_market.id,
+                            side="NO",
+                            size=stake_per_side,
+                            entry_price=1 - p_market,
+                            kelly_fraction=0.05,
+                            order_id=f"arb-no-{market_row['slug']}-{iteration}",
+                            is_paper=True,
+                            status="open",
+                            opened_at=datetime.now(UTC),
+                            strategy="arbitrage",
+                        ))
+                        bets_placed += 2
+                        signals_generated += 1
+                        continue
+
                 vpin_score: float | None = None
                 if platform == "manifold" and manifold is not None:
                     try:
@@ -348,6 +435,7 @@ async def run_paper_trading_loop(
                         is_paper=True,
                         status="open",
                         opened_at=datetime.now(UTC),
+                        strategy="calibration",
                     )
                 )
                 bets_placed += 1
@@ -366,10 +454,11 @@ async def run_paper_trading_loop(
         )
 
         LOGGER.info(
-            "paper_summary markets_checked=%s signals_generated=%s bets_placed=%s running_pnl_estimate=%.4f",
+            "paper_summary markets_checked=%s signals_generated=%s bets_placed=%s exits=%s running_pnl_estimate=%.4f",
             markets_checked,
             signals_generated,
             bets_placed,
+            exits_closed,
             running_pnl_estimate,
         )
         print(
@@ -377,6 +466,7 @@ async def run_paper_trading_loop(
             f"markets_checked={markets_checked} "
             f"signals_generated={signals_generated} "
             f"bets_placed={bets_placed} "
+            f"exits={exits_closed} "
             f"running_pnl_estimate={running_pnl_estimate:.4f}"
         )
 

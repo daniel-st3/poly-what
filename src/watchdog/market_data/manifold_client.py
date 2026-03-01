@@ -147,18 +147,59 @@ class ManifoldClient:
         ).lower()
 
         mapping = [
-            ("politics", ["election", "president", "congress", "senate", "politic"]),
-            ("crypto", ["bitcoin", "crypto", "eth", "sol", "token"]),
-            ("macro", ["fed", "inflation", "rates", "gdp", "cpi"]),
-            ("sports", ["nba", "nfl", "soccer", "world cup", "game"]),
-            ("tech", ["ai", "openai", "google", "apple", "microsoft"]),
-            ("geo", ["war", "ukraine", "china", "taiwan", "israel", "gaza"]),
-            ("entertainment", ["movie", "music", "oscar", "netflix"]),
-            ("science", ["space", "nasa", "trial", "climate", "research"]),
+            ("politics", [
+                "election", "president", "congress", "senate", "politic",
+                "democrat", "republican", "trump", "biden", "carlson",
+                "vote", "governor", "legislation", "impeach", "caucus",
+                "gop", "dnc", "rnc", "speaker", "endorse",
+            ]),
+            ("crypto", [
+                "bitcoin", "crypto", "eth", "sol", "token",
+                "solana", "defi", "nft", "blockchain", "binance",
+                "coinbase", "ethereum", "dogecoin", "altcoin",
+            ]),
+            ("macro", [
+                "fed", "inflation", "rates", "gdp", "cpi",
+                "interest rate", "unemployment", "treasury", "stocks",
+                "recession", "tariff", "trade war", "bond", "debt ceiling",
+            ]),
+            ("sports", [
+                "nba", "nfl", "soccer", "world cup", "game",
+                "football", "championship", "playoff", "mvp", "team",
+                "league", "match", "mlb", "ufc", "boxing", "super bowl",
+            ]),
+            ("tech", [
+                "ai", "openai", "google", "apple", "microsoft",
+                "anthropic", "aws", "meta", "startup", "software",
+                "chip", "nvidia", "chatgpt", "gemini", "tesla",
+            ]),
+            ("geo", [
+                "war", "ukraine", "china", "taiwan", "israel", "gaza",
+                "russia", "iran", "nato", "regime", "sanctions",
+                "invasion", "ceasefire", "missile", "nuclear",
+            ]),
+            ("entertainment", [
+                "movie", "music", "oscar", "netflix",
+                "tv", "show", "album", "grammy", "box office", "disney",
+                "emmy", "spotify", "celebrity", "marvel",
+            ]),
+            ("science", [
+                "space", "nasa", "trial", "climate", "research",
+                "vaccine", "fda", "study", "mars", "quantum",
+            ]),
         ]
+
+        # Pass 1: single keyword match (fast path)
         for domain, keywords in mapping:
             if any(keyword in text for keyword in keywords):
                 return domain
+
+        # Pass 2: fuzzy multi-keyword match (≥2 related terms)
+        for domain, keywords in mapping:
+            matches = sum(1 for kw in keywords if kw in text)
+            if matches >= 2:
+                return domain
+
         return "other"
 
     def get_markets(self, limit: int = 100) -> list[dict[str, Any]]:

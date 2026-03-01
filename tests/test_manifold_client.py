@@ -37,7 +37,7 @@ def test_place_bet_uses_auth_header(monkeypatch: pytest.MonkeyPatch) -> None:
         assert url.endswith("/bet")
         assert headers is not None
         assert headers.get("Authorization") == "Key test-key"
-        assert json == {"marketId": "mkt-1", "outcome": "YES", "amount": 10.0}
+        assert json == {"contractId": "mkt-1", "outcome": "YES", "amount": 10.0}
         return _FakeResponse(200, {"betId": "b1", "status": "ok"})
 
     monkeypatch.setattr("httpx.Client.request", _request)
