@@ -90,6 +90,11 @@ class Settings(BaseSettings):
     min_arb_spread: float = Field(default=0.03, ge=0.01, le=0.50)
     max_arb_position_size: float = Field(default=20.0, ge=1.0, le=1000.0)
 
+    # Short-term trading filters
+    max_resolution_hours: int = Field(default=168, ge=1, le=8760)
+    min_resolution_hours: int = Field(default=6, ge=0, le=168)
+    min_volume_24h: float = Field(default=1000.0, ge=0.0, le=1000000000.0)
+
     experiment_id: str = "feb2026_v1"
 
 

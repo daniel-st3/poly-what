@@ -284,6 +284,40 @@ async def run_paper_trading_loop(
                 markets_checked += 1
                 db_market = _upsert_market(session, market_row)
 
+                # --- Filter 1: Resolution time window ---
+                if db_market.resolution_time:
+                    hours_until = _hours_to_resolution(db_market.resolution_time)
+                    if hours_until > settings.max_resolution_hours:
+                        LOGGER.debug(
+                            "Skipping %s: resolves in %.1f hours (max %d)",
+                            market_row["slug"], hours_until, settings.max_resolution_hours,
+                        )
+                        continue
+                    if hours_until < settings.min_resolution_hours:
+                        LOGGER.debug(
+                            "Skipping %s: resolves in %.1f hours (too soon, min %d)",
+                            market_row["slug"], hours_until, settings.min_resolution_hours,
+                        )
+                        continue
+
+                # --- Filter 2: Volume check ---
+                volume_24h = float(
+                    market_row.get("volume_24h")
+                    or market_row.get("volume")
+                    or 0,
+                )
+                if volume_24h < settings.min_volume_24h:
+                    LOGGER.debug(
+                        "Skipping %s: volume_24h=$%.0f (below $%.0f threshold)",
+                        market_row["slug"], volume_24h, settings.min_volume_24h,
+                    )
+                    continue
+
+                # Volume multiplier: high-volume markets accept lower divergence
+                volume_multiplier = 1.0
+                if volume_24h > 10000:
+                    volume_multiplier = 1.5
+
                 p_market = float(market_row["probability"])
 
                 # --- Check for arbitrage first (highest priority) ---
@@ -384,7 +418,10 @@ async def run_paper_trading_loop(
                     session.add(signal)
                     continue
 
-                if divergence < settings.min_divergence_paper:
+                # Volume-adjusted divergence threshold
+                effective_min_div = settings.min_divergence_paper / volume_multiplier
+                if divergence < effective_min_div:
+                    signal.rationale = f"divergence_below_threshold (adj: {effective_min_div:.4f})"
                     session.add(signal)
                     continue
 

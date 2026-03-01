@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from watchdog.db.models import Market, Trade
+from watchdog.services.pipeline import _hours_to_resolution
 
 LOGGER = logging.getLogger(__name__)
 
@@ -71,7 +72,14 @@ class ExitManager:
                 exit_reason = f"take_profit ({pnl_pct:+.1%})"
             elif pnl_pct <= -self.stop_loss_pct:
                 exit_reason = f"stop_loss ({pnl_pct:+.1%})"
-            elif trade.opened_at is not None:
+            elif market.resolution_time is not None:
+                # Resolution-proximity exit: lock gains if <2h to close
+                hours_left = _hours_to_resolution(market.resolution_time)
+                if hours_left < 2 and pnl_pct > 0:
+                    exit_reason = f"resolution_imminent ({hours_left:.1f}h left, {pnl_pct:+.1%})"
+
+            # Time-based exit: held too long with profit
+            if exit_reason is None and trade.opened_at is not None:
                 opened = trade.opened_at
                 if opened.tzinfo is None:
                     opened = opened.replace(tzinfo=UTC)

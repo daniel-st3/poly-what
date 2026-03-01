@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from sqlalchemy import select
 
@@ -10,6 +12,9 @@ from watchdog.market_data.manifold_client import ManifoldClient
 from watchdog.scripts.run_paper_trading import run_paper_trading_loop
 from watchdog.signals.calibration import CalibrationResult, CalibrationSurfaceService
 
+# Close time 48 hours from now (ISO format)
+_CLOSE_48H = (datetime.now(UTC) + timedelta(hours=48)).isoformat()
+
 
 @pytest.mark.asyncio
 async def test_manifold_paper_vpin_proxy_allows_trade(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -17,6 +22,7 @@ async def test_manifold_paper_vpin_proxy_allows_trade(monkeypatch: pytest.Monkey
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
     monkeypatch.setenv("MANIFOLD_API_KEY", "test-key")
     monkeypatch.setenv("PAPER_LOOP_SECONDS", "5")
+    monkeypatch.setenv("MIN_VOLUME_24H", "0")
     get_settings.cache_clear()
 
     monkeypatch.setattr(
@@ -29,7 +35,7 @@ async def test_manifold_paper_vpin_proxy_allows_trade(monkeypatch: pytest.Monkey
                 "question": "Will test event happen?",
                 "probability": 0.50,
                 "isResolved": False,
-                "closeTime": "2030-01-01T00:00:00Z",
+                "closeTime": _CLOSE_48H,
             }
         ],
     )
@@ -98,6 +104,7 @@ async def test_manifold_paper_vpin_guardrail_skips_trade(monkeypatch: pytest.Mon
     monkeypatch.setenv("MANIFOLD_API_KEY", "test-key")
     monkeypatch.setenv("PAPER_LOOP_SECONDS", "5")
     monkeypatch.setenv("VPIN_KILL_THRESHOLD", "0.70")
+    monkeypatch.setenv("MIN_VOLUME_24H", "0")
     get_settings.cache_clear()
 
     monkeypatch.setattr(
@@ -110,7 +117,7 @@ async def test_manifold_paper_vpin_guardrail_skips_trade(monkeypatch: pytest.Mon
                 "question": "Will toxic flow test trigger?",
                 "probability": 0.50,
                 "isResolved": False,
-                "closeTime": "2030-01-01T00:00:00Z",
+                "closeTime": _CLOSE_48H,
             }
         ],
     )

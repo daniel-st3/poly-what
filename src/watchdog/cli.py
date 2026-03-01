@@ -514,5 +514,87 @@ def analyze_paper_trades_command() -> None:
     typer.echo("")
 
 
+@app.command("find-quick-markets")
+def find_quick_markets_command(
+    platform: Annotated[str, typer.Option()] = "manifold",
+    limit: Annotated[int, typer.Option(min=1, max=500)] = 80,
+) -> None:
+    """Find short-term markets suitable for fast trading."""
+    import asyncio
+
+    from watchdog.market_data.manifold_client import ManifoldClient
+    from watchdog.services.pipeline import _hours_to_resolution
+
+    settings = get_settings()
+
+    async def _find() -> None:
+        manifold = ManifoldClient(
+            base_url=settings.manifold_api_base_url,
+            api_key=settings.manifold_api_key,
+        )
+
+        if platform == "manifold":
+            raw_markets = await asyncio.to_thread(manifold.get_markets, limit)
+        else:
+            typer.echo(f"Platform '{platform}' not yet supported for quick-market scan.")
+            raise typer.Exit(code=1)
+
+        candidates: list[dict] = []
+        for m in raw_markets:
+            close_time = m.get("closeTime")
+            if not close_time:
+                continue
+
+            from datetime import datetime as _dt, timezone as _tz
+            if isinstance(close_time, (int, float)):
+                res_time = _dt.fromtimestamp(close_time / 1000, tz=_tz.utc)
+            else:
+                continue
+
+            hours = _hours_to_resolution(res_time)
+            if hours < settings.min_resolution_hours or hours > settings.max_resolution_hours:
+                continue
+
+            vol = float(m.get("volume24Hours") or m.get("volume") or 0)
+            if vol < settings.min_volume_24h:
+                continue
+
+            prob = float(m.get("probability") or 0.5)
+            domain = manifold._infer_domain(m)
+            question = str(m.get("question") or "")[:55]
+
+            candidates.append({
+                "question": question,
+                "hours": hours,
+                "volume": vol,
+                "prob": prob,
+                "domain": domain,
+                "slug": m.get("slug"),
+            })
+
+        candidates.sort(key=lambda x: -x["volume"])
+        top = candidates[:10]
+
+        if not top:
+            typer.echo("No markets match the 6-168h resolution + volume filters.")
+            raise typer.Exit()
+
+        typer.echo("")
+        header = f"{'Rank':>4}  {'Market':<57} {'Resolves':>10} {'Vol 24h':>12} {'Domain':<12}"
+        typer.echo(header)
+        typer.echo("-" * len(header))
+
+        for i, c in enumerate(top, 1):
+            hours_str = f"{c['hours']:.0f}h"
+            vol_str = f"${c['volume']:,.0f}"
+            typer.echo(
+                f"{i:>4}  {c['question']:<57} {hours_str:>10} {vol_str:>12} {c['domain']:<12}"
+            )
+
+        typer.echo(f"\n{len(candidates)} total markets match filters ({len(raw_markets)} scanned)")
+
+    asyncio.run(_find())
+
+
 if __name__ == "__main__":
     app()
