@@ -41,7 +41,17 @@ def _parse_resolution_time(value: Any) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    # Handle numeric timestamps (int or float) — Manifold sends ms since epoch
+    if isinstance(value, (int, float)):
+        ts = float(value)
+        # If value > 1e10 it's in milliseconds, convert to seconds
+        if ts > 1e10:
+            ts /= 1000
+        try:
+            return datetime.fromtimestamp(ts, tz=UTC)
+        except (OSError, OverflowError, ValueError):
+            return None
     try:
         parsed = dtparser.parse(str(value))
     except Exception:
@@ -115,6 +125,8 @@ async def _load_platform_markets(
                     "probability": probability,
                     "yes_token_id": market_id,
                     "no_token_id": market_id,
+                    # Use 24h volume if available, fall back to total volume
+                    "volume": float(raw.get("volume24Hours") or raw.get("volume") or 0),
                 }
             )
         return out

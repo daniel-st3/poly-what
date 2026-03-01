@@ -528,48 +528,52 @@ def find_quick_markets_command(
     settings = get_settings()
 
     async def _find() -> None:
-        manifold = ManifoldClient(
-            base_url=settings.manifold_api_base_url,
-            api_key=settings.manifold_api_key,
-        )
+        manifold = None
+        polymarket = None
 
         if platform == "manifold":
-            raw_markets = await asyncio.to_thread(manifold.get_markets, limit)
+            manifold = ManifoldClient(
+                base_url=settings.manifold_api_base_url,
+                api_key=settings.manifold_api_key,
+            )
+        elif platform == "polymarket":
+            from watchdog.market_data.polymarket_cli import PolymarketCli
+            polymarket = PolymarketCli(settings)
         else:
-            typer.echo(f"Platform '{platform}' not yet supported for quick-market scan.")
+            typer.echo(f"Platform '{platform}' not supported.")
             raise typer.Exit(code=1)
 
-        candidates: list[dict] = []
-        for m in raw_markets:
-            close_time = m.get("closeTime")
-            if not close_time:
-                continue
+        from watchdog.scripts.run_paper_trading import _load_platform_markets
 
-            from datetime import datetime as _dt, timezone as _tz
-            if isinstance(close_time, (int, float)):
-                res_time = _dt.fromtimestamp(close_time / 1000, tz=_tz.utc)
-            else:
+        typer.echo(f"Fetching up to {limit} markets from {platform}...")
+        unified_markets = await _load_platform_markets(
+            platform=platform,
+            max_markets=limit,
+            manifold=manifold,
+            polymarket=polymarket,
+        )
+
+        candidates: list[dict] = []
+        for m in unified_markets:
+            res_time = m.get("resolution_time")
+            if not res_time:
                 continue
 
             hours = _hours_to_resolution(res_time)
             if hours < settings.min_resolution_hours or hours > settings.max_resolution_hours:
                 continue
 
-            vol = float(m.get("volume24Hours") or m.get("volume") or 0)
+            vol = float(m.get("volume") or m.get("volume24Hours") or m.get("volume_24h") or 0)
             if vol < settings.min_volume_24h:
                 continue
 
-            prob = float(m.get("probability") or 0.5)
-            domain = manifold._infer_domain(m)
-            question = str(m.get("question") or "")[:55]
-
             candidates.append({
-                "question": question,
+                "question": m["question"][:55],
                 "hours": hours,
                 "volume": vol,
-                "prob": prob,
-                "domain": domain,
-                "slug": m.get("slug"),
+                "prob": m["probability"],
+                "domain": m["domain"],
+                "slug": m["slug"],
             })
 
         candidates.sort(key=lambda x: -x["volume"])
@@ -591,7 +595,7 @@ def find_quick_markets_command(
                 f"{i:>4}  {c['question']:<57} {hours_str:>10} {vol_str:>12} {c['domain']:<12}"
             )
 
-        typer.echo(f"\n{len(candidates)} total markets match filters ({len(raw_markets)} scanned)")
+        typer.echo(f"\n{len(candidates)} total markets match filters ({len(unified_markets)} scanned)")
 
     asyncio.run(_find())
 
