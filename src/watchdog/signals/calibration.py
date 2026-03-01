@@ -63,9 +63,40 @@ class CalibrationSurfaceService:
         time_bucket = self._bucket_time(hours_to_resolution)
         domain_norm = domain.lower().strip() or "unknown"
 
-        key_exact = (price_bucket, time_bucket, domain_norm)
-        key_fallback = (price_bucket, time_bucket, "unknown")
-        adjustment = self._surface.get(key_exact, self._surface.get(key_fallback, 0.0))
+        # Domain alias mapping for Manifold/Polymarket categories
+        domain_aliases: dict[str, str] = {
+            "us-current-affairs": "politics",
+            "coronavirus": "macro",
+            "geo": "politics",
+            "pop-culture": "other",
+            "entertainment": "other",
+            "business": "macro",
+            "nfts": "crypto",
+            "olympics": "sports",
+            "science": "tech",
+        }
+        mapped_domain = domain_aliases.get(domain_norm, domain_norm)
+
+        key_exact = (price_bucket, time_bucket, mapped_domain)
+        key_fallback_other = (price_bucket, time_bucket, "other")
+        key_fallback_unknown = (price_bucket, time_bucket, "unknown")
+
+        adjustment = self._surface.get(
+            key_exact,
+            self._surface.get(
+                key_fallback_other,
+                self._surface.get(key_fallback_unknown, None),
+            ),
+        )
+
+        # If still no match, find any domain at this (price, time) bucket
+        if adjustment is None:
+            for k, v in self._surface.items():
+                if k[0] == price_bucket and k[1] == time_bucket:
+                    adjustment = v
+                    break
+            else:
+                adjustment = 0.0
 
         # Sentiment contributes a bounded secondary adjustment.
         sentiment_adj = float(np.clip(sentiment_score * 0.03, -0.05, 0.05))

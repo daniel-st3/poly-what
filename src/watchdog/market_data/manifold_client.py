@@ -203,7 +203,7 @@ class ManifoldClient:
             raise ValueError("amount must be positive")
 
         payload = {
-            "marketId": market_id,
+            "contractId": market_id,
             "outcome": side,
             "amount": float(amount),
         }
