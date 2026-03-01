@@ -197,7 +197,7 @@ class PipelineRunner:
         self, session: Session, stats: PipelineStats, experiment_id: str
     ) -> None:
         """Process volume spike news events with a fast path (skip router, lower threshold)."""
-        VOLUME_SPIKE_MIN_DIVERGENCE = 0.10
+        volume_spike_min_divergence = 0.10
 
         spike_news = (
             session.execute(
@@ -220,9 +220,6 @@ class PipelineRunner:
 
         for news_row in spike_news:
             stats.processed_news += 1
-            pipeline_id = uuid.uuid4().hex[:12]
-            t0 = time.perf_counter()
-            ts_news_received = news_row.received_at
 
             # Extract slug from raw_text (format: "VOLUME SPIKE: {slug} | ...")
             raw = news_row.raw_text or ""
@@ -305,7 +302,7 @@ class PipelineRunner:
             )
 
             # Use lower divergence threshold for volume spikes (0.10 vs default 0.15)
-            if divergence >= VOLUME_SPIKE_MIN_DIVERGENCE:
+            if divergence >= volume_spike_min_divergence:
                 # Go straight to executor (skip router)
                 executor_ctx = {
                     "market_slug": market.slug,
@@ -317,7 +314,7 @@ class PipelineRunner:
                     "orderbook": metrics,
                     "market_question": market.question,
                     "resolution_time": market.resolution_time.isoformat() if market.resolution_time else None,
-                    "min_divergence": VOLUME_SPIKE_MIN_DIVERGENCE,
+                    "min_divergence": volume_spike_min_divergence,
                     "signal_type": "volume_spike",
                 }
                 executor_decision = await self.executor.decide(executor_ctx)

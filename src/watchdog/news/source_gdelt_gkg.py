@@ -58,7 +58,7 @@ async def fetch_gdelt_gkg(
     seen_urls: set[str] = set()
     out: list[NewsItem] = []
 
-    for keyword, result in zip(keywords, results):
+    for keyword, result in zip(keywords, results, strict=False):
         if isinstance(result, Exception):
             LOGGER.warning("GDELT GKG query failed for '%s': %s", keyword, result)
             continue
