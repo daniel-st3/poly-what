@@ -580,7 +580,7 @@ def find_quick_markets_command(
         top = candidates[:10]
 
         if not top:
-            typer.echo("No markets match the 6-168h resolution + volume filters.")
+            typer.echo(f"No markets match the {settings.min_resolution_hours}-{settings.max_resolution_hours}h resolution + volume filters.")
             raise typer.Exit()
 
         typer.echo("")

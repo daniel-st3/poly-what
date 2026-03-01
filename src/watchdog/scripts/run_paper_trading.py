@@ -131,22 +131,29 @@ async def _load_platform_markets(
             )
         return out
 
-    assert polymarket is not None
-    response = await asyncio.to_thread(polymarket.list_markets, max_markets)
-    rows = _extract_markets_payload(response.payload)
+    # --- Polymarket via REST API (Gamma + CLOB) ---
+    from watchdog.market_data.polymarket_rest import PolymarketRestClient
+
+    rest = PolymarketRestClient()
+    raw_markets = await asyncio.to_thread(rest.list_active_markets, max_markets)
+
     out = []
-    for row in rows:
-        slug = str(row.get("slug") or "").strip()
+    for market in raw_markets:
+        slug = market.get("slug") or ""
         if not slug:
             continue
 
-        status = str(row.get("status") or "active").lower()
-        if status not in {"active", "open"}:
+        yes_token = market.get("yes_token_id")
+        if not yes_token:
             continue
 
-        orderbook = await asyncio.to_thread(polymarket.orderbook, slug)
-        metrics = _extract_orderbook_metrics(orderbook.payload)
-        mid = float(metrics.get("mid") or 0.0)
+        try:
+            orderbook = await asyncio.to_thread(rest.get_orderbook, yes_token)
+        except Exception:
+            LOGGER.debug("Failed to fetch orderbook for %s", slug)
+            continue
+
+        mid = float(orderbook.get("mid") or 0.0)
         if mid <= 0:
             continue
 
@@ -154,13 +161,14 @@ async def _load_platform_markets(
             {
                 "market_id": slug,
                 "slug": slug,
-                "question": str(row.get("question") or row.get("title") or slug),
-                "domain": str(row.get("domain") or row.get("category") or "other"),
-                "resolution_time": _parse_resolution_time(row.get("endDate") or row.get("resolution_time")),
-                "status": status,
+                "question": str(market.get("question") or slug),
+                "domain": "other",
+                "resolution_time": _parse_resolution_time(market.get("end_date")),
+                "status": "active",
                 "probability": max(0.01, min(0.99, mid)),
-                "yes_token_id": str(row.get("yesTokenId") or row.get("yes_token_id") or slug),
-                "no_token_id": str(row.get("noTokenId") or row.get("no_token_id") or slug),
+                "volume": float(market.get("volume_24h") or 0),
+                "yes_token_id": yes_token,
+                "no_token_id": market.get("no_token_id"),
             }
         )
 
