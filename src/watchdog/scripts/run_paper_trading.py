@@ -454,10 +454,15 @@ async def run_paper_trading_loop(
                     session.add(signal)
                     continue
 
-                # Volume-adjusted divergence threshold
-                effective_min_div = settings.min_divergence_paper / volume_multiplier
+                # Platform-specific divergence threshold
+                base_min_div = (
+                    settings.min_divergence_manifold
+                    if platform == "manifold"
+                    else settings.min_divergence_polymarket
+                )
+                effective_min_div = base_min_div / volume_multiplier
                 if divergence < effective_min_div:
-                    signal.rationale = f"divergence_below_threshold (adj: {effective_min_div:.4f})"
+                    signal.rationale = f"divergence_below_threshold (min={effective_min_div:.4f})"
                     session.add(signal)
                     continue
 

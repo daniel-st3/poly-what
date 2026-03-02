@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     min_divergence: float = Field(default=0.15, ge=0.01, le=0.50)
     min_divergence_backtest: float = Field(default=0.15, ge=0.01, le=0.50)
     min_divergence_paper: float = Field(default=0.17, ge=0.01, le=0.60)
+    min_divergence_manifold: float = Field(
+        default=0.05, ge=0.005, le=0.60,
+        description="Minimum divergence for Manifold (play money, more mispricing)",
+    )
+    min_divergence_polymarket: float = Field(
+        default=0.02, ge=0.005, le=0.60,
+        description="Minimum divergence for Polymarket (real money, efficient markets)",
+    )
     min_divergence_live: float = Field(default=0.20, ge=0.01, le=0.60)
     near_resolution_hours: int = Field(default=2, ge=1, le=72)
     near_resolution_fraction: float = Field(default=0.05, ge=0.01, le=0.5)

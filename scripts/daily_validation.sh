@@ -1,6 +1,6 @@
 #!/bin/bash
 # Daily paper trading accumulation script
-# Run via cron: 0 9 * * * /path/to/poly-what/scripts/daily_validation.sh >> /path/to/poly-what/logs/daily.log 2>&1
+# Run via cron: 0 9 * * * /Users/danielstevenrodriguezsandoval/Desktop/trabajo\ bogota\ 2026/poly-agent/scripts/daily_validation.sh >> /Users/danielstevenrodriguezsandoval/Desktop/trabajo\ bogota\ 2026/poly-agent/logs/daily.log 2>&1
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -9,11 +9,11 @@ source .venv/bin/activate
 
 echo "=== $(date) Daily Validation Run ==="
 
-# Run 5 Manifold iterations
+# Run 5 Manifold iterations (5% threshold)
 echo "Running Manifold paper trading..."
 watchdog run-paper-trading --platform manifold --iterations 5
 
-# Run 5 Polymarket iterations (REST API)
+# Run 5 Polymarket iterations (2% threshold via REST API)
 echo "Running Polymarket paper trading..."
 watchdog run-paper-trading --platform polymarket --iterations 5
 
