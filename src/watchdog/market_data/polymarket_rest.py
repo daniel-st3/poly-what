@@ -30,48 +30,59 @@ class PolymarketRestClient:
 
     def list_active_markets(self, limit: int = 100) -> list[dict[str, Any]]:
         """Return active, open markets sorted by 24h volume descending."""
-        params: dict[str, str] = {
-            "limit": str(limit),
-            "active": "true",
-            "closed": "false",
-            "order": "volume24hr",
-            "ascending": "false",
-        }
-        resp = httpx.get(
-            f"{GAMMA_BASE}/markets",
-            params=params,
-            timeout=self._timeout,
-        )
-        resp.raise_for_status()
-        raw: list[dict[str, Any]] = resp.json()
-
         markets: list[dict[str, Any]] = []
-        for item in raw:
-            # clobTokenIds can be a JSON string or a list
-            clob_ids = item.get("clobTokenIds") or []
-            if isinstance(clob_ids, str):
-                try:
-                    clob_ids = json.loads(clob_ids)
-                except (json.JSONDecodeError, TypeError):
-                    clob_ids = []
+        offset = 0
+        batch_size = 100
 
-            if not clob_ids or not item.get("endDate"):
-                continue
-
-            markets.append(
-                {
-                    "slug": item.get("slug") or item.get("conditionId", ""),
-                    "question": item.get("question") or "",
-                    "end_date": item.get("endDate"),
-                    "volume_24h": float(item.get("volume24hr") or 0),
-                    "liquidity": float(item.get("liquidity") or 0),
-                    "yes_token_id": clob_ids[0] if len(clob_ids) > 0 else None,
-                    "no_token_id": clob_ids[1] if len(clob_ids) > 1 else None,
-                    "image": item.get("image"),
-                }
+        while len(markets) < limit:
+            fetch_limit = min(batch_size, limit - len(markets))
+            params: dict[str, str] = {
+                "limit": str(fetch_limit),
+                "offset": str(offset),
+                "active": "true",
+                "closed": "false",
+                "order": "volume24hr",
+                "ascending": "false",
+            }
+            resp = httpx.get(
+                f"{GAMMA_BASE}/markets",
+                params=params,
+                timeout=self._timeout,
             )
+            resp.raise_for_status()
+            raw: list[dict[str, Any]] = resp.json()
+            
+            if not raw:
+                break
 
-        return markets
+            for item in raw:
+                # clobTokenIds can be a JSON string or a list
+                clob_ids = item.get("clobTokenIds") or []
+                if isinstance(clob_ids, str):
+                    try:
+                        clob_ids = json.loads(clob_ids)
+                    except (json.JSONDecodeError, TypeError):
+                        clob_ids = []
+
+                if not clob_ids or not item.get("endDate"):
+                    continue
+
+                markets.append(
+                    {
+                        "slug": item.get("slug") or item.get("conditionId", ""),
+                        "question": item.get("question") or "",
+                        "end_date": item.get("endDate"),
+                        "volume_24h": float(item.get("volume24hr") or 0),
+                        "liquidity": float(item.get("liquidity") or 0),
+                        "yes_token_id": clob_ids[0] if len(clob_ids) > 0 else None,
+                        "no_token_id": clob_ids[1] if len(clob_ids) > 1 else None,
+                        "image": item.get("image"),
+                    }
+                )
+            
+            offset += len(raw)
+
+        return markets[:limit]
 
     # ------------------------------------------------------------------
     # Orderbook (CLOB API)

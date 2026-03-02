@@ -15,7 +15,7 @@ watchdog run-paper-trading --platform manifold --iterations 5
 
 # Run 5 Polymarket iterations (2% threshold via REST API)
 echo "Running Polymarket paper trading..."
-watchdog run-paper-trading --platform polymarket --iterations 5
+watchdog run-paper-trading --platform polymarket --iterations 5 --max-markets 300
 
 # Analyze results
 echo ""
