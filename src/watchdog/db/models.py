@@ -118,6 +118,9 @@ class Trade(Base):
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     strategy: Mapped[str | None] = mapped_column(String(32), nullable=True, default="calibration", index=True)
+    close_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    high_water_mark: Mapped[float | None] = mapped_column(Float, nullable=True)
+    remaining_fraction: Mapped[float | None] = mapped_column(Float, nullable=True, default=1.0)
 
     market: Mapped[Market] = relationship(back_populates="trades")
 

@@ -6,6 +6,8 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+import numpy as np
+
 from dateutil import parser as dtparser
 from sqlalchemy import select
 
@@ -17,6 +19,8 @@ from watchdog.db.models import Market, Signal, Trade
 from watchdog.db.session import build_engine, build_session_factory
 from watchdog.market_data.manifold_client import ManifoldAPIError, ManifoldClient
 from watchdog.market_data.polymarket_cli import PolymarketCli
+from watchdog.risk.circuit_breaker import CircuitBreaker
+from watchdog.risk.kelly import EmpiricalKellySizer
 from watchdog.risk.vpin import TradeFlow, VPINCalculator
 from watchdog.services.pipeline import _extract_orderbook_metrics, _hours_to_resolution
 from watchdog.signals.calibration import CalibrationSurfaceService
@@ -24,6 +28,23 @@ from watchdog.strategies.arbitrage_detector import ArbitrageDetector
 from watchdog.strategies.exit_manager import ExitManager
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _raw_kelly(p_model: float, p_market: float, side: str) -> float:
+    """Full Kelly fraction WITHOUT clipping to [0, 1].
+
+    Negative value means negative expected value — trade should be rejected.
+    """
+    p_model = max(1e-6, min(1 - 1e-6, p_model))
+    p_market = max(1e-6, min(1 - 1e-6, p_market))
+    if side.upper() == "YES":
+        q = p_model
+        b = (1 - p_market) / p_market
+    else:
+        q = 1 - p_model
+        p_no = 1 - p_market
+        b = (1 - p_no) / p_no
+    return (b * q - (1 - q)) / b
 
 
 def _extract_markets_payload(payload: Any) -> list[dict[str, Any]]:
@@ -104,6 +125,15 @@ async def _load_platform_markets(
         for raw in rows:
             resolved = bool(raw.get("isResolved") or raw.get("resolved") or raw.get("resolution") is not None)
             if resolved:
+                continue
+
+            outcome_type = str(raw.get("outcomeType") or "BINARY").upper()
+            if outcome_type != "BINARY":
+                LOGGER.debug(
+                    "Skipping non_binary_market: slug=%s outcomeType=%s",
+                    raw.get("slug") or raw.get("id"),
+                    outcome_type,
+                )
                 continue
 
             market_id = str(raw.get("id") or raw.get("marketId") or "").strip()
@@ -242,12 +272,26 @@ async def run_paper_trading_loop(
     if polymarket is not None:
         polymarket.startup_check()
 
+    from watchdog.market_data.polymarket_rest import PolymarketRestClient
+    polymarket_rest = PolymarketRestClient() if platform == "polymarket" else None
+
     calibration = CalibrationSurfaceService()
     vpin_calc = VPINCalculator()
+    kelly_sizer = EmpiricalKellySizer(
+        kelly_fraction=settings.kelly_fraction,
+        max_drawdown_p95=settings.max_drawdown_p95,
+    )
+    circuit_breaker = CircuitBreaker(
+        max_daily_loss_usd=settings.max_daily_loss_usd,
+        cooldown_minutes=settings.circuit_breaker_cooldown_minutes,
+        n8n_webhook_url=settings.n8n_webhook_url,
+    )
     exit_manager = ExitManager(
         take_profit_pct=settings.take_profit_pct,
+        take_profit_2_pct=settings.take_profit_2_pct,
         stop_loss_pct=settings.stop_loss_pct,
-        max_hold_days=settings.max_hold_days,
+        stop_loss_2_pct=settings.stop_loss_2_pct,
+        max_hold_hours=settings.max_hold_hours,
     )
     arb_detector = ArbitrageDetector(
         min_arb_spread=settings.min_arb_spread,
@@ -267,6 +311,16 @@ async def run_paper_trading_loop(
 
         with session_factory() as session:
             calibration.load_from_db(session)
+            # --- Circuit breaker: halt loop if daily loss limit exceeded ---
+            if not circuit_breaker.check(session):
+                LOGGER.warning(
+                    "CircuitBreaker active — skipping iteration %d. "
+                    "Sleeping %d s before retry.",
+                    iteration,
+                    settings.paper_loop_seconds,
+                )
+                await asyncio.sleep(settings.paper_loop_seconds)
+                continue
 
         market_rows = await _load_platform_markets(
             platform=platform,
@@ -291,6 +345,7 @@ async def run_paper_trading_loop(
                 platform=platform,
                 manifold=manifold,
                 polymarket=polymarket,
+                polymarket_rest=polymarket_rest,
             )
             try:
                 session.commit()
@@ -300,6 +355,22 @@ async def run_paper_trading_loop(
 
         # --- Main market scan ---
         with session_factory() as session:
+            # Count positions already open (from prior iterations)
+            open_position_count = session.execute(
+                select(Trade).where(Trade.is_paper.is_(True), Trade.status == "open")
+            ).scalars().all()
+            open_count = len(open_position_count)
+            deployed_capital = sum(t.size for t in open_position_count)
+            free_capital = max(bankroll - deployed_capital, 0.0)
+
+            if open_count >= settings.max_positions_simultaneous:
+                LOGGER.info(
+                    "Portfolio full (%d/%d positions, $%.2f deployed) — skipping new entries",
+                    open_count, settings.max_positions_simultaneous, deployed_capital,
+                )
+
+            new_positions_this_iter = 0  # track within this session block
+
             for market_row in market_rows:
                 markets_checked += 1
                 db_market = _upsert_market(session, market_row)
@@ -468,9 +539,64 @@ async def run_paper_trading_loop(
 
                 signals_generated += 1
                 side = "YES" if result.model_probability > p_market else "NO"
-                stake = min(bankroll * settings.max_position_per_market, bankroll * 0.10)
+
+                # --- Portfolio cap: stop opening new positions when full ---
+                total_open = open_count + new_positions_this_iter
+                if total_open >= settings.max_positions_simultaneous:
+                    signal.rationale = (
+                        f"portfolio_full ({total_open}/{settings.max_positions_simultaneous} positions)"
+                    )
+                    session.add(signal)
+                    LOGGER.debug(
+                        "Skipping %s: portfolio full (%d/%d open positions)",
+                        market_row["slug"], total_open, settings.max_positions_simultaneous,
+                    )
+                    continue
+
+                # --- Reject negative-Kelly trades ---
+                raw_k = _raw_kelly(result.model_probability, p_market, side)
+                if raw_k <= 0:
+                    signal.rationale = f"negative_kelly ({raw_k:.4f})"
+                    session.add(signal)
+                    LOGGER.debug(
+                        "Skipping %s: negative Kelly %.4f (no edge on this side)",
+                        market_row["slug"], raw_k,
+                    )
+                    continue
+
+                # --- Quarter-Kelly position sizing (sized against free capital) ---
+                # free_capital tracks undeployed bankroll, shrinking as we place bets.
+                if free_capital <= 1.0:
+                    signal.rationale = "no_free_capital"
+                    session.add(signal)
+                    continue
+
+                sizing = kelly_sizer.size(
+                    p_model=result.model_probability,
+                    p_market=p_market,
+                    side=side,
+                    historical_edge_estimates=np.array([]),
+                    historical_trade_returns=np.array([]),
+                )
+                # When no historical data is available empirical_fraction collapses to 0
+                # (cv_edge = 1.0 → uncertainty_scale = 0). Fall back to simple Quarter-Kelly.
+                if sizing.empirical_fraction > 0:
+                    kelly_fraction = sizing.empirical_fraction
+                else:
+                    kelly_fraction = sizing.full_kelly * settings.kelly_fraction
+                kelly_fraction = min(kelly_fraction, settings.max_position_per_market)
+                kelly_fraction = max(kelly_fraction, 0.001)
+                # Size against free_capital so stakes shrink naturally as capital deploys.
+                # Hard cap: never more than max_position_per_market × original bankroll.
+                stake = free_capital * kelly_fraction
                 stake = max(stake, 1.0)
-                kelly_fraction = min(stake / max(bankroll, 1e-9), settings.max_position_per_market)
+                stake = min(stake, bankroll * settings.max_position_per_market)
+
+                LOGGER.debug(
+                    "Kelly sizing %s: full_k=%.4f empirical=%.4f stake=%.2f",
+                    market_row["slug"], sizing.full_kelly, sizing.empirical_fraction, stake,
+                )
+
                 entry_price = p_market if side == "YES" else (1 - p_market)
 
                 signal.should_trade = True
@@ -514,9 +640,13 @@ async def run_paper_trading_loop(
                         status="open",
                         opened_at=datetime.now(UTC),
                         strategy="calibration",
+                        high_water_mark=entry_price,
+                        remaining_fraction=1.0,
                     )
                 )
                 bets_placed += 1
+                new_positions_this_iter += 1
+                free_capital -= stake  # reduce available capital for the next candidate
 
             try:
                 session.commit()

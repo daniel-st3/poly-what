@@ -52,6 +52,29 @@ class CalibrationSurfaceService:
             self._surface[key] = row.model_adjustment
         return len(rows)
 
+    def _lookup_adjustment(
+        self,
+        price_bucket: int,
+        time_bucket: int,
+        mapped_domain: str,
+    ) -> float | None:
+        """Look up calibration adjustment for exact (price, time, domain) combo.
+
+        Tries mapped domain first, then 'other', then 'unknown', then any domain
+        at the same (price, time) bucket.  Returns *None* when nothing matches.
+        """
+        for domain_try in (mapped_domain, "other", "unknown"):
+            val = self._surface.get((price_bucket, time_bucket, domain_try))
+            if val is not None:
+                return val
+
+        # Any domain at this (price, time)
+        for k, v in self._surface.items():
+            if k[0] == price_bucket and k[1] == time_bucket:
+                return v
+
+        return None
+
     def calibrate(
         self,
         market_probability: float,
@@ -77,26 +100,26 @@ class CalibrationSurfaceService:
         }
         mapped_domain = domain_aliases.get(domain_norm, domain_norm)
 
-        key_exact = (price_bucket, time_bucket, mapped_domain)
-        key_fallback_other = (price_bucket, time_bucket, "other")
-        key_fallback_unknown = (price_bucket, time_bucket, "unknown")
+        # --- Primary lookup at exact time bucket ---
+        adjustment = self._lookup_adjustment(price_bucket, time_bucket, mapped_domain)
 
-        adjustment = self._surface.get(
-            key_exact,
-            self._surface.get(
-                key_fallback_other,
-                self._surface.get(key_fallback_unknown, None),
-            ),
-        )
-
-        # If still no match, find any domain at this (price, time) bucket
+        # --- Time-bucket cascade: try progressively larger buckets ---
+        # The Becker dataset is heavily concentrated in the 2160h bucket.
+        # If the exact time bucket has no data for this price, cascade up
+        # to larger buckets so we still get a calibration signal.
         if adjustment is None:
-            for k, v in self._surface.items():
-                if k[0] == price_bucket and k[1] == time_bucket:
-                    adjustment = v
+            tb_index = self.TIME_BUCKETS.index(time_bucket) if time_bucket in self.TIME_BUCKETS else -1
+            for i in range(tb_index + 1, len(self.TIME_BUCKETS)):
+                adjustment = self._lookup_adjustment(price_bucket, self.TIME_BUCKETS[i], mapped_domain)
+                if adjustment is not None:
+                    LOGGER.debug(
+                        "Calibration cascade: no data at %dh, using %dh bucket (price=%d, domain=%s)",
+                        time_bucket, self.TIME_BUCKETS[i], price_bucket, mapped_domain,
+                    )
                     break
-            else:
-                adjustment = 0.0
+
+        if adjustment is None:
+            adjustment = 0.0
 
         # Sentiment contributes a bounded secondary adjustment.
         sentiment_adj = float(np.clip(sentiment_score * 0.03, -0.05, 0.05))

@@ -1,0 +1,308 @@
+=== Mon Mar  9 09:44:16 -05 2026 Exit Check ===
+2026-03-09 09:44:17,766 | WARNING | __main__ | === Exit check started | platform=manifold | 2026-03-09 14:44:17 UTC ===
+2026-03-09 09:44:17,776 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 09:44:18,031 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/EqtgtCQRLn "HTTP/1.1 200 OK"
+2026-03-09 09:44:18,229 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/qtsyShZSAR "HTTP/1.1 200 OK"
+2026-03-09 09:44:18,437 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/52gq8dUyyZ "HTTP/1.1 200 OK"
+2026-03-09 09:44:18,725 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/IdqICLLNgI "HTTP/1.1 200 OK"
+2026-03-09 09:44:18,891 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/9UISsQ8Ugq "HTTP/1.1 200 OK"
+2026-03-09 09:44:18,893 | WARNING | __main__ | Live prices fetched: 1/5 markets
+2026-03-09 09:44:18,896 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=manifold ===
+2026-03-09 09:44:19,301 | WARNING | __main__ | === Exit check started | platform=polymarket | 2026-03-09 14:44:19 UTC ===
+2026-03-09 09:44:19,309 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 09:44:19,743 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=EqtgtCQRLn "HTTP/1.1 404 Not Found"
+2026-03-09 09:44:20,160 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=qtsyShZSAR "HTTP/1.1 404 Not Found"
+2026-03-09 09:44:20,407 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=52gq8dUyyZ "HTTP/1.1 404 Not Found"
+2026-03-09 09:44:20,643 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=IdqICLLNgI "HTTP/1.1 404 Not Found"
+2026-03-09 09:44:21,079 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=9UISsQ8Ugq "HTTP/1.1 404 Not Found"
+2026-03-09 09:44:21,080 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 09:44:21,084 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=polymarket ===
+=== Done ===
+=== Mon Mar  9 09:59:21 -05 2026 Exit Check ===
+2026-03-09 09:59:22,157 | WARNING | __main__ | === Exit check started | platform=manifold | 2026-03-09 14:59:22 UTC ===
+2026-03-09 09:59:22,167 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 09:59:22,397 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/EqtgtCQRLn "HTTP/1.1 200 OK"
+2026-03-09 09:59:22,545 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/qtsyShZSAR "HTTP/1.1 200 OK"
+2026-03-09 09:59:22,721 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/52gq8dUyyZ "HTTP/1.1 200 OK"
+2026-03-09 09:59:22,879 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/IdqICLLNgI "HTTP/1.1 200 OK"
+2026-03-09 09:59:23,049 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/9UISsQ8Ugq "HTTP/1.1 200 OK"
+2026-03-09 09:59:23,051 | WARNING | __main__ | Live prices fetched: 1/5 markets
+2026-03-09 09:59:23,055 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=manifold ===
+2026-03-09 09:59:23,464 | WARNING | __main__ | === Exit check started | platform=polymarket | 2026-03-09 14:59:23 UTC ===
+2026-03-09 09:59:23,473 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 09:59:23,941 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=EqtgtCQRLn "HTTP/1.1 404 Not Found"
+2026-03-09 09:59:24,186 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=qtsyShZSAR "HTTP/1.1 404 Not Found"
+2026-03-09 09:59:24,621 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=52gq8dUyyZ "HTTP/1.1 404 Not Found"
+2026-03-09 09:59:25,095 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=IdqICLLNgI "HTTP/1.1 404 Not Found"
+2026-03-09 09:59:25,550 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=9UISsQ8Ugq "HTTP/1.1 404 Not Found"
+2026-03-09 09:59:25,550 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 09:59:25,552 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=polymarket ===
+=== Done ===
+=== Mon Mar  9 10:14:25 -05 2026 Exit Check ===
+2026-03-09 10:14:27,591 | WARNING | __main__ | === Exit check started | platform=manifold | 2026-03-09 15:14:27 UTC ===
+2026-03-09 10:14:27,605 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 10:14:28,074 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/EqtgtCQRLn "HTTP/1.1 200 OK"
+2026-03-09 10:14:28,220 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/qtsyShZSAR "HTTP/1.1 200 OK"
+2026-03-09 10:14:28,366 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/52gq8dUyyZ "HTTP/1.1 200 OK"
+2026-03-09 10:14:28,516 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/IdqICLLNgI "HTTP/1.1 200 OK"
+2026-03-09 10:14:28,670 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/9UISsQ8Ugq "HTTP/1.1 200 OK"
+2026-03-09 10:14:28,671 | WARNING | __main__ | Live prices fetched: 1/5 markets
+2026-03-09 10:14:28,673 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=manifold ===
+2026-03-09 10:14:29,374 | WARNING | __main__ | === Exit check started | platform=polymarket | 2026-03-09 15:14:29 UTC ===
+2026-03-09 10:14:29,386 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 10:14:29,645 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=EqtgtCQRLn "HTTP/1.1 404 Not Found"
+2026-03-09 10:14:30,106 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=qtsyShZSAR "HTTP/1.1 404 Not Found"
+2026-03-09 10:14:30,620 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=52gq8dUyyZ "HTTP/1.1 404 Not Found"
+2026-03-09 10:14:31,082 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=IdqICLLNgI "HTTP/1.1 404 Not Found"
+2026-03-09 10:14:31,530 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=9UISsQ8Ugq "HTTP/1.1 404 Not Found"
+2026-03-09 10:14:31,531 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 10:14:31,534 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=polymarket ===
+=== Done ===
+=== Mon Mar  9 10:29:31 -05 2026 Exit Check ===
+2026-03-09 10:29:32,761 | WARNING | __main__ | === Exit check started | platform=manifold | 2026-03-09 15:29:32 UTC ===
+2026-03-09 10:29:32,771 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 10:29:32,993 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/EqtgtCQRLn "HTTP/1.1 200 OK"
+2026-03-09 10:29:33,162 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/qtsyShZSAR "HTTP/1.1 200 OK"
+2026-03-09 10:29:33,379 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/52gq8dUyyZ "HTTP/1.1 200 OK"
+2026-03-09 10:29:33,548 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/IdqICLLNgI "HTTP/1.1 200 OK"
+2026-03-09 10:29:33,729 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/9UISsQ8Ugq "HTTP/1.1 200 OK"
+2026-03-09 10:29:33,730 | WARNING | __main__ | Live prices fetched: 1/5 markets
+2026-03-09 10:29:33,733 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=manifold ===
+2026-03-09 10:29:34,135 | WARNING | __main__ | === Exit check started | platform=polymarket | 2026-03-09 15:29:34 UTC ===
+2026-03-09 10:29:34,143 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 10:29:34,413 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=EqtgtCQRLn "HTTP/1.1 404 Not Found"
+2026-03-09 10:29:34,861 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=qtsyShZSAR "HTTP/1.1 404 Not Found"
+2026-03-09 10:29:35,104 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=52gq8dUyyZ "HTTP/1.1 404 Not Found"
+2026-03-09 10:29:35,336 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=IdqICLLNgI "HTTP/1.1 404 Not Found"
+2026-03-09 10:29:35,620 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=9UISsQ8Ugq "HTTP/1.1 404 Not Found"
+2026-03-09 10:29:35,622 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 10:29:35,625 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=polymarket ===
+=== Done ===
+=== Mon Mar  9 10:44:35 -05 2026 Exit Check ===
+2026-03-09 10:44:38,366 | WARNING | __main__ | === Exit check started | platform=manifold | 2026-03-09 15:44:38 UTC ===
+2026-03-09 10:44:38,390 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 10:44:39,724 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/EqtgtCQRLn "HTTP/1.1 200 OK"
+2026-03-09 10:44:40,383 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/qtsyShZSAR "HTTP/1.1 200 OK"
+2026-03-09 10:44:40,727 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/52gq8dUyyZ "HTTP/1.1 200 OK"
+2026-03-09 10:44:44,981 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/IdqICLLNgI "HTTP/1.1 200 OK"
+2026-03-09 10:44:45,642 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/9UISsQ8Ugq "HTTP/1.1 200 OK"
+2026-03-09 10:44:45,643 | WARNING | __main__ | Live prices fetched: 1/5 markets
+2026-03-09 10:44:45,645 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=manifold ===
+2026-03-09 10:44:46,221 | WARNING | __main__ | === Exit check started | platform=polymarket | 2026-03-09 15:44:46 UTC ===
+2026-03-09 10:44:46,232 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 10:44:46,512 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=EqtgtCQRLn "HTTP/1.1 404 Not Found"
+2026-03-09 10:44:46,773 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=qtsyShZSAR "HTTP/1.1 404 Not Found"
+2026-03-09 10:44:47,014 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=52gq8dUyyZ "HTTP/1.1 404 Not Found"
+2026-03-09 10:44:47,256 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=IdqICLLNgI "HTTP/1.1 404 Not Found"
+2026-03-09 10:44:47,712 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=9UISsQ8Ugq "HTTP/1.1 404 Not Found"
+2026-03-09 10:44:47,714 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 10:44:47,716 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=polymarket ===
+=== Done ===
+=== Mon Mar  9 11:23:38 -05 2026 Exit Check ===
+2026-03-09 11:23:40,041 | WARNING | __main__ | === Exit check started | platform=manifold | 2026-03-09 16:23:40 UTC ===
+2026-03-09 11:23:40,056 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 11:23:40,276 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 11:23:40,277 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=manifold ===
+2026-03-09 11:23:40,670 | WARNING | __main__ | === Exit check started | platform=polymarket | 2026-03-09 16:23:40 UTC ===
+2026-03-09 11:23:40,678 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 11:23:40,779 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 11:23:40,779 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=polymarket ===
+=== Done ===
+=== Mon Mar  9 11:42:22 -05 2026 Exit Check ===
+2026-03-09 11:42:24,021 | WARNING | __main__ | === Exit check started | platform=manifold | 2026-03-09 16:42:24 UTC ===
+2026-03-09 11:42:24,032 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 11:42:24,175 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 11:42:24,175 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=manifold ===
+2026-03-09 11:42:24,692 | WARNING | __main__ | === Exit check started | platform=polymarket | 2026-03-09 16:42:24 UTC ===
+2026-03-09 11:42:24,700 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 11:42:24,815 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 11:42:24,816 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=polymarket ===
+=== Done ===
+=== Mon Mar  9 11:58:23 -05 2026 Exit Check ===
+2026-03-09 11:58:24,602 | WARNING | __main__ | === Exit check started | platform=manifold | 2026-03-09 16:58:24 UTC ===
+2026-03-09 11:58:24,622 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 11:58:24,777 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 11:58:24,778 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=manifold ===
+2026-03-09 11:58:25,135 | WARNING | __main__ | === Exit check started | platform=polymarket | 2026-03-09 16:58:25 UTC ===
+2026-03-09 11:58:25,143 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 11:58:25,243 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 11:58:25,244 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=polymarket ===
+=== Done ===
+=== Mon Mar  9 15:44:12 -05 2026 Exit Check ===
+2026-03-09 15:44:13,705 | WARNING | __main__ | === Exit check started | platform=manifold | 2026-03-09 20:44:13 UTC ===
+2026-03-09 15:44:13,714 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 15:44:14,064 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/EqtgtCQRLn "HTTP/1.1 200 OK"
+2026-03-09 15:44:14,293 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/qtsyShZSAR "HTTP/1.1 200 OK"
+2026-03-09 15:44:14,481 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/52gq8dUyyZ "HTTP/1.1 200 OK"
+2026-03-09 15:44:14,694 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/IdqICLLNgI "HTTP/1.1 200 OK"
+2026-03-09 15:44:14,865 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/9UISsQ8Ugq "HTTP/1.1 200 OK"
+2026-03-09 15:44:14,867 | WARNING | __main__ | Live prices fetched: 1/5 markets
+2026-03-09 15:44:14,871 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=manifold ===
+2026-03-09 15:44:15,291 | WARNING | __main__ | === Exit check started | platform=polymarket | 2026-03-09 20:44:15 UTC ===
+2026-03-09 15:44:15,299 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 15:44:15,636 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=EqtgtCQRLn "HTTP/1.1 404 Not Found"
+2026-03-09 15:44:15,934 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=qtsyShZSAR "HTTP/1.1 404 Not Found"
+2026-03-09 15:44:16,211 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=52gq8dUyyZ "HTTP/1.1 404 Not Found"
+2026-03-09 15:44:16,549 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=IdqICLLNgI "HTTP/1.1 404 Not Found"
+2026-03-09 15:44:16,848 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=9UISsQ8Ugq "HTTP/1.1 404 Not Found"
+2026-03-09 15:44:16,849 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 15:44:16,852 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=polymarket ===
+=== Done ===
+=== Mon Mar  9 15:59:17 -05 2026 Exit Check ===
+2026-03-09 15:59:18,004 | WARNING | __main__ | === Exit check started | platform=manifold | 2026-03-09 20:59:18 UTC ===
+2026-03-09 15:59:18,015 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 15:59:18,296 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/EqtgtCQRLn "HTTP/1.1 200 OK"
+2026-03-09 15:59:20,673 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/qtsyShZSAR "HTTP/1.1 200 OK"
+2026-03-09 15:59:21,061 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/52gq8dUyyZ "HTTP/1.1 200 OK"
+2026-03-09 15:59:21,253 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/IdqICLLNgI "HTTP/1.1 200 OK"
+2026-03-09 15:59:21,432 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/9UISsQ8Ugq "HTTP/1.1 200 OK"
+2026-03-09 15:59:21,433 | WARNING | __main__ | Live prices fetched: 1/5 markets
+2026-03-09 15:59:21,435 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=manifold ===
+2026-03-09 15:59:21,866 | WARNING | __main__ | === Exit check started | platform=polymarket | 2026-03-09 20:59:21 UTC ===
+2026-03-09 15:59:21,874 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 15:59:22,180 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=EqtgtCQRLn "HTTP/1.1 404 Not Found"
+2026-03-09 15:59:22,485 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=qtsyShZSAR "HTTP/1.1 404 Not Found"
+2026-03-09 15:59:22,911 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=52gq8dUyyZ "HTTP/1.1 404 Not Found"
+2026-03-09 15:59:23,185 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=IdqICLLNgI "HTTP/1.1 404 Not Found"
+2026-03-09 15:59:23,486 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=9UISsQ8Ugq "HTTP/1.1 404 Not Found"
+2026-03-09 15:59:23,488 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 15:59:23,491 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=polymarket ===
+=== Done ===
+=== Mon Mar  9 16:14:23 -05 2026 Exit Check ===
+2026-03-09 16:14:25,258 | WARNING | __main__ | === Exit check started | platform=manifold | 2026-03-09 21:14:25 UTC ===
+2026-03-09 16:14:25,277 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 16:14:25,748 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/EqtgtCQRLn "HTTP/1.1 200 OK"
+2026-03-09 16:14:25,934 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/qtsyShZSAR "HTTP/1.1 200 OK"
+2026-03-09 16:14:26,157 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/52gq8dUyyZ "HTTP/1.1 200 OK"
+2026-03-09 16:14:26,355 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/IdqICLLNgI "HTTP/1.1 200 OK"
+2026-03-09 16:14:26,650 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/9UISsQ8Ugq "HTTP/1.1 200 OK"
+2026-03-09 16:14:26,653 | WARNING | __main__ | Live prices fetched: 1/5 markets
+2026-03-09 16:14:26,658 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=manifold ===
+2026-03-09 16:14:27,090 | WARNING | __main__ | === Exit check started | platform=polymarket | 2026-03-09 21:14:27 UTC ===
+2026-03-09 16:14:27,099 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 16:14:27,473 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=EqtgtCQRLn "HTTP/1.1 404 Not Found"
+2026-03-09 16:14:27,813 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=qtsyShZSAR "HTTP/1.1 404 Not Found"
+2026-03-09 16:14:28,120 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=52gq8dUyyZ "HTTP/1.1 404 Not Found"
+2026-03-09 16:14:28,516 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=IdqICLLNgI "HTTP/1.1 404 Not Found"
+2026-03-09 16:14:28,894 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=9UISsQ8Ugq "HTTP/1.1 404 Not Found"
+2026-03-09 16:14:28,896 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 16:14:28,901 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=polymarket ===
+=== Done ===
+=== Mon Mar  9 16:29:29 -05 2026 Exit Check ===
+2026-03-09 16:29:29,922 | WARNING | __main__ | === Exit check started | platform=manifold | 2026-03-09 21:29:29 UTC ===
+2026-03-09 16:29:29,933 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 16:29:30,499 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/EqtgtCQRLn "HTTP/1.1 200 OK"
+2026-03-09 16:29:30,682 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/qtsyShZSAR "HTTP/1.1 200 OK"
+2026-03-09 16:29:30,868 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/52gq8dUyyZ "HTTP/1.1 200 OK"
+2026-03-09 16:29:31,043 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/IdqICLLNgI "HTTP/1.1 200 OK"
+2026-03-09 16:29:31,211 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/9UISsQ8Ugq "HTTP/1.1 200 OK"
+2026-03-09 16:29:31,213 | WARNING | __main__ | Live prices fetched: 1/5 markets
+2026-03-09 16:29:31,216 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=manifold ===
+2026-03-09 16:29:31,618 | WARNING | __main__ | === Exit check started | platform=polymarket | 2026-03-09 21:29:31 UTC ===
+2026-03-09 16:29:31,626 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 16:29:32,247 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=EqtgtCQRLn "HTTP/1.1 404 Not Found"
+2026-03-09 16:29:32,492 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=qtsyShZSAR "HTTP/1.1 404 Not Found"
+2026-03-09 16:29:32,789 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=52gq8dUyyZ "HTTP/1.1 404 Not Found"
+2026-03-09 16:29:33,066 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=IdqICLLNgI "HTTP/1.1 404 Not Found"
+2026-03-09 16:29:33,511 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=9UISsQ8Ugq "HTTP/1.1 404 Not Found"
+2026-03-09 16:29:33,523 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 16:29:33,525 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=polymarket ===
+=== Done ===
+=== Mon Mar  9 16:44:33 -05 2026 Exit Check ===
+2026-03-09 16:44:34,728 | WARNING | __main__ | === Exit check started | platform=manifold | 2026-03-09 21:44:34 UTC ===
+2026-03-09 16:44:34,740 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 16:44:35,301 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/EqtgtCQRLn "HTTP/1.1 200 OK"
+2026-03-09 16:44:35,483 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/qtsyShZSAR "HTTP/1.1 200 OK"
+2026-03-09 16:44:35,661 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/52gq8dUyyZ "HTTP/1.1 200 OK"
+2026-03-09 16:44:35,870 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/IdqICLLNgI "HTTP/1.1 200 OK"
+2026-03-09 16:44:36,043 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/9UISsQ8Ugq "HTTP/1.1 200 OK"
+2026-03-09 16:44:36,045 | WARNING | __main__ | Live prices fetched: 1/5 markets
+2026-03-09 16:44:36,048 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=manifold ===
+2026-03-09 16:44:36,521 | WARNING | __main__ | === Exit check started | platform=polymarket | 2026-03-09 21:44:36 UTC ===
+2026-03-09 16:44:36,529 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 16:44:36,843 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=EqtgtCQRLn "HTTP/1.1 404 Not Found"
+2026-03-09 16:44:37,217 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=qtsyShZSAR "HTTP/1.1 404 Not Found"
+2026-03-09 16:44:37,465 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=52gq8dUyyZ "HTTP/1.1 404 Not Found"
+2026-03-09 16:44:37,719 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=IdqICLLNgI "HTTP/1.1 404 Not Found"
+2026-03-09 16:44:37,954 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=9UISsQ8Ugq "HTTP/1.1 404 Not Found"
+2026-03-09 16:44:37,956 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 16:44:37,959 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=polymarket ===
+=== Done ===
+=== Mon Mar  9 16:59:38 -05 2026 Exit Check ===
+2026-03-09 16:59:39,038 | WARNING | __main__ | === Exit check started | platform=manifold | 2026-03-09 21:59:39 UTC ===
+2026-03-09 16:59:39,049 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 16:59:39,672 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/EqtgtCQRLn "HTTP/1.1 200 OK"
+2026-03-09 16:59:39,957 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/qtsyShZSAR "HTTP/1.1 200 OK"
+2026-03-09 16:59:40,192 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/52gq8dUyyZ "HTTP/1.1 200 OK"
+2026-03-09 16:59:40,395 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/IdqICLLNgI "HTTP/1.1 200 OK"
+2026-03-09 16:59:40,601 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/9UISsQ8Ugq "HTTP/1.1 200 OK"
+2026-03-09 16:59:40,602 | WARNING | __main__ | Live prices fetched: 1/5 markets
+2026-03-09 16:59:40,604 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=manifold ===
+2026-03-09 16:59:41,067 | WARNING | __main__ | === Exit check started | platform=polymarket | 2026-03-09 21:59:41 UTC ===
+2026-03-09 16:59:41,076 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 16:59:41,381 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=EqtgtCQRLn "HTTP/1.1 404 Not Found"
+2026-03-09 16:59:41,635 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=qtsyShZSAR "HTTP/1.1 404 Not Found"
+2026-03-09 16:59:41,910 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=52gq8dUyyZ "HTTP/1.1 404 Not Found"
+2026-03-09 16:59:42,177 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=IdqICLLNgI "HTTP/1.1 404 Not Found"
+2026-03-09 16:59:42,421 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=9UISsQ8Ugq "HTTP/1.1 404 Not Found"
+2026-03-09 16:59:42,421 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 16:59:42,425 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=polymarket ===
+=== Done ===
+=== Mon Mar  9 17:47:38 -05 2026 Exit Check ===
+2026-03-09 17:47:40,015 | WARNING | __main__ | === Exit check started | platform=manifold | 2026-03-09 22:47:40 UTC ===
+2026-03-09 17:47:40,028 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 17:47:40,508 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/EqtgtCQRLn "HTTP/1.1 200 OK"
+2026-03-09 17:47:40,702 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/qtsyShZSAR "HTTP/1.1 200 OK"
+2026-03-09 17:47:40,867 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/52gq8dUyyZ "HTTP/1.1 200 OK"
+2026-03-09 17:47:41,074 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/IdqICLLNgI "HTTP/1.1 200 OK"
+2026-03-09 17:47:41,344 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/9UISsQ8Ugq "HTTP/1.1 200 OK"
+2026-03-09 17:47:41,346 | WARNING | __main__ | Live prices fetched: 1/5 markets
+2026-03-09 17:47:41,350 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=manifold ===
+2026-03-09 17:47:41,890 | WARNING | __main__ | === Exit check started | platform=polymarket | 2026-03-09 22:47:41 UTC ===
+2026-03-09 17:47:41,900 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 17:47:42,258 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=EqtgtCQRLn "HTTP/1.1 404 Not Found"
+2026-03-09 17:47:42,565 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=qtsyShZSAR "HTTP/1.1 404 Not Found"
+2026-03-09 17:47:42,891 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=52gq8dUyyZ "HTTP/1.1 404 Not Found"
+2026-03-09 17:47:43,152 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=IdqICLLNgI "HTTP/1.1 404 Not Found"
+2026-03-09 17:47:43,509 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=9UISsQ8Ugq "HTTP/1.1 404 Not Found"
+2026-03-09 17:47:43,511 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 17:47:43,530 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=polymarket ===
+=== Done ===
+=== Mon Mar  9 20:53:23 -05 2026 Exit Check ===
+2026-03-09 20:53:26,022 | WARNING | __main__ | === Exit check started | platform=manifold | 2026-03-10 01:53:26 UTC ===
+2026-03-09 20:53:26,037 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 20:53:43,344 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/qtsyShZSAR "HTTP/1.1 200 OK"
+2026-03-09 20:53:43,951 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/52gq8dUyyZ "HTTP/1.1 200 OK"
+2026-03-09 20:53:48,775 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/IdqICLLNgI "HTTP/1.1 200 OK"
+2026-03-09 20:53:48,923 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/9UISsQ8Ugq "HTTP/1.1 200 OK"
+2026-03-09 20:53:48,925 | WARNING | __main__ | Live prices fetched: 1/5 markets
+2026-03-09 20:53:48,940 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=manifold ===
+2026-03-09 20:53:49,620 | WARNING | __main__ | === Exit check started | platform=polymarket | 2026-03-10 01:53:49 UTC ===
+2026-03-09 20:53:49,633 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 20:53:49,928 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=EqtgtCQRLn "HTTP/1.1 404 Not Found"
+2026-03-09 20:53:50,352 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=qtsyShZSAR "HTTP/1.1 404 Not Found"
+2026-03-09 20:53:50,755 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=52gq8dUyyZ "HTTP/1.1 404 Not Found"
+2026-03-09 20:53:51,149 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=IdqICLLNgI "HTTP/1.1 404 Not Found"
+2026-03-09 20:53:51,629 | INFO | httpx | HTTP Request: GET https://clob.polymarket.com/book?token_id=9UISsQ8Ugq "HTTP/1.1 404 Not Found"
+2026-03-09 20:53:51,630 | WARNING | __main__ | Live prices fetched: 0/5 markets
+2026-03-09 20:53:51,632 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=polymarket ===
+=== Done ===
+=== Mon Mar  9 21:08:51 -05 2026 Exit Check ===
+2026-03-09 21:08:52,768 | WARNING | __main__ | === Exit check started | platform=manifold | 2026-03-10 02:08:52 UTC ===
+2026-03-09 21:08:52,776 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 21:08:52,989 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/EqtgtCQRLn "HTTP/1.1 200 OK"
+2026-03-09 21:08:52,990 | WARNING | __main__ | Market during-which-round-will-the-first-1 is MULTIPLE_CHOICE (no scalar probability) — using 0.5 neutral price
+2026-03-09 21:08:53,144 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/qtsyShZSAR "HTTP/1.1 200 OK"
+2026-03-09 21:09:08,225 | WARNING | __main__ | Price fetch failed for ncaa-college-basketball-games-march: Manifold request failed for GET /market/52gq8dUyyZ: The read operation timed out
+2026-03-09 21:09:15,132 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/IdqICLLNgI "HTTP/1.1 200 OK"
+2026-03-09 21:09:15,134 | WARNING | __main__ | Market who-will-have-a-1-song-on-spotify-u is MULTIPLE_CHOICE (no scalar probability) — using 0.5 neutral price
+2026-03-09 21:09:16,548 | INFO | httpx | HTTP Request: GET https://api.manifold.markets/v0/market/9UISsQ8Ugq "HTTP/1.1 200 OK"
+2026-03-09 21:09:16,550 | WARNING | __main__ | Market on-what-days-will-i-be-productive-t-c569IIOnn5 is MULTIPLE_CHOICE (no scalar probability) — using 0.5 neutral price
+2026-03-09 21:09:16,551 | WARNING | __main__ | Live prices fetched: 4/5 markets
+2026-03-09 21:09:16,579 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=manifold ===
+2026-03-09 21:09:17,146 | WARNING | __main__ | === Exit check started | platform=polymarket | 2026-03-10 02:09:17 UTC ===
+2026-03-09 21:09:17,154 | WARNING | __main__ | Open positions: 5 across 5 markets
+2026-03-09 21:09:17,154 | WARNING | __main__ | Skipping 5 Manifold position(s) during Polymarket exit check (no condition_id — would 404 on CLOB API)
+2026-03-09 21:09:17,154 | WARNING | __main__ | No Polymarket positions to check — exiting early.
+2026-03-09 21:09:17,154 | WARNING | __main__ | === Exit check complete | exits_fired=0 | platform=polymarket ===
+=== Done ===

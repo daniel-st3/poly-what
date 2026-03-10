@@ -88,10 +88,18 @@ class Settings(BaseSettings):
     live_bankroll_usdc: float = Field(default=50.0, ge=1.0, le=1000000.0)
     paper_bankroll_usdc: float = Field(default=500.0, ge=1.0, le=1000000.0)
 
-    # Exit management
-    take_profit_pct: float = Field(default=0.30, ge=0.01, le=5.0)
-    stop_loss_pct: float = Field(default=0.15, ge=0.01, le=1.0)
-    max_hold_days: int = Field(default=7, ge=1, le=365)
+    # Exit management — tiered thresholds
+    take_profit_pct: float = Field(default=0.10, ge=0.01, le=5.0)   # tier-1 TP (50% exit)
+    take_profit_2_pct: float = Field(default=0.20, ge=0.01, le=5.0)  # tier-2 TP (remaining 50%)
+    stop_loss_pct: float = Field(default=0.15, ge=0.01, le=1.0)       # tier-1 SL (50% exit)
+    stop_loss_2_pct: float = Field(default=0.25, ge=0.01, le=1.0)     # tier-2 SL (remaining 50%)
+    max_hold_hours: int = Field(default=48, ge=1, le=8760)             # force-close after N hours
+    max_hold_days: int = Field(default=7, ge=1, le=365)                # legacy, unused by exit_manager
+
+    # Circuit breaker / kill-switch
+    max_daily_loss_usd: float = Field(default=50.0, ge=1.0, le=10000.0)
+    n8n_webhook_url: str | None = None
+    circuit_breaker_cooldown_minutes: int = Field(default=60, ge=5, le=1440)
 
     # Arbitrage
     enable_arbitrage: bool = True
