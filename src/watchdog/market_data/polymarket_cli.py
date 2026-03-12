@@ -87,8 +87,20 @@ class PolymarketCli:
         return version
 
     def check_geoblock(self) -> None:
-        response = self._run(["geoblock"], expect_json=True)
-        payload = response.payload
+        last_error: PolymarketCliError | None = None
+        payload: Any | None = None
+
+        for args in (["clob", "geoblock"], ["geoblock"]):
+            try:
+                payload = self._run(args, expect_json=True).payload
+                break
+            except PolymarketCliError as exc:
+                last_error = exc
+
+        if payload is None:
+            if last_error is not None:
+                raise last_error
+            raise PolymarketCliError("Geoblock check failed")
 
         blocked_countries: list[str] = []
         if isinstance(payload, dict):

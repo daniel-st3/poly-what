@@ -26,6 +26,23 @@ from watchdog.strategies.exit_manager import ExitManager
 LOGGER = logging.getLogger(__name__)
 
 
+def _infer_platform(trade: Trade, market: Market) -> str:
+    """Infer the source venue for an open position.
+
+    Paper trades created by this repo encode the venue in ``order_id``.
+    Fall back to market metadata for older rows and arbitrage records.
+    """
+    order_id = (trade.order_id or "").lower()
+    if order_id.startswith("paper-polymarket-"):
+        return "polymarket"
+    if order_id.startswith("paper-manifold-"):
+        return "manifold"
+
+    if market.condition_id:
+        return "polymarket"
+    return "manifold"
+
+
 async def _fetch_prices_manifold(
     open_markets: list[Market],
     manifold: ManifoldClient,
@@ -136,24 +153,25 @@ async def run_exit_check(platform: str) -> None:
             return
 
         # --- Filter markets to those belonging to this platform ---
-        if platform == "polymarket":
-            # Polymarket positions have a condition_id; Manifold positions do not.
-            open_markets = [m for m in all_open_markets if m.condition_id]
-            skipped = len(all_open_markets) - len(open_markets)
-            if skipped:
-                LOGGER.warning(
-                    "Skipping %d Manifold position(s) during Polymarket exit check "
-                    "(no condition_id — would 404 on CLOB API)",
-                    skipped,
-                )
-            if not open_markets:
-                LOGGER.warning("No Polymarket positions to check — exiting early.")
-                LOGGER.warning(
-                    "=== Exit check complete | exits_fired=0 | platform=%s ===", platform
-                )
-                return
-        else:
-            open_markets = all_open_markets
+        platform_rows = [(trade, market) for trade, market in rows if _infer_platform(trade, market) == platform]
+        open_markets = list({m.id: m for _, m in platform_rows}.values())
+        skipped_positions = len(rows) - len(platform_rows)
+
+        if skipped_positions:
+            other_platform = "Polymarket" if platform == "manifold" else "Manifold"
+            LOGGER.warning(
+                "Skipping %d %s position(s) during %s exit check",
+                skipped_positions,
+                other_platform,
+                platform.capitalize(),
+            )
+
+        if not open_markets:
+            LOGGER.warning("No %s positions to check — exiting early.", platform.capitalize())
+            LOGGER.warning(
+                "=== Exit check complete | exits_fired=0 | platform=%s ===", platform
+            )
+            return
 
         # --- Fetch live prices ---
         if platform == "manifold" and manifold is not None:

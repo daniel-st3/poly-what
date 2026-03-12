@@ -95,6 +95,7 @@ def _upsert_market(session, market_row: dict[str, Any]) -> Market:
             domain=str(market_row.get("domain") or "other"),
             yes_token_id=str(market_row.get("yes_token_id") or "") or None,
             no_token_id=str(market_row.get("no_token_id") or "") or None,
+            condition_id=str(market_row.get("condition_id") or "") or None,
             resolution_time=_parse_resolution_time(market_row.get("resolution_time")),
             status=str(market_row.get("status") or "active"),
         )
@@ -106,6 +107,7 @@ def _upsert_market(session, market_row: dict[str, Any]) -> Market:
     existing.domain = str(market_row.get("domain") or existing.domain)
     existing.yes_token_id = str(market_row.get("yes_token_id") or existing.yes_token_id or "") or None
     existing.no_token_id = str(market_row.get("no_token_id") or existing.no_token_id or "") or None
+    existing.condition_id = str(market_row.get("condition_id") or existing.condition_id or "") or None
     existing.resolution_time = _parse_resolution_time(market_row.get("resolution_time")) or existing.resolution_time
     existing.status = str(market_row.get("status") or existing.status)
     return existing
@@ -199,6 +201,7 @@ async def _load_platform_markets(
                 "volume": float(market.get("volume_24h") or 0),
                 "yes_token_id": yes_token,
                 "no_token_id": market.get("no_token_id"),
+                "condition_id": market.get("condition_id"),
             }
         )
 

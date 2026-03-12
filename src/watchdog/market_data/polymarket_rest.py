@@ -71,6 +71,7 @@ class PolymarketRestClient:
                     {
                         "slug": item.get("slug") or item.get("conditionId", ""),
                         "question": item.get("question") or "",
+                        "condition_id": item.get("conditionId"),
                         "end_date": item.get("endDate"),
                         "volume_24h": float(item.get("volume24hr") or 0),
                         "liquidity": float(item.get("liquidity") or 0),
