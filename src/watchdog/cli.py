@@ -471,45 +471,76 @@ def analyze_paper_trades_command() -> None:
             "status": trade.status,
         })
 
-    # Summary table header
+    # Summary table header (extended with Sortino, Brier, F1, Sig?)
     typer.echo("")
-    header = f"{'Strategy':<20} {'Trades':>6} {'Open':>5} {'Closed':>6} {'Win%':>6} {'Avg PnL':>9} {'Sharpe':>7} {'Max DD':>8}"
+    header = (
+        f"{'Strategy':<20} {'Trades':>6} {'Win%':>6} {'Avg PnL':>9} "
+        f"{'Sharpe':>7} {'Sortino':>8} {'Brier':>7} {'F1':>6}  {'Sig?'}"
+    )
     typer.echo(header)
-    typer.echo("-" * len(header))
+    typer.echo("-" * (len(header) + 10))
 
     for strat, trades in sorted(strategies.items()):
-        total = len(trades)
         closed = [t for t in trades if t["status"] == "closed"]
         open_trades = [t for t in trades if t["status"] == "open"]
 
-        if closed:
-            pnls = [t["pnl"] for t in closed]
-            wins = sum(1 for p in pnls if p > 0)
-            win_pct = (wins / len(pnls)) * 100
-            avg_pnl = mean(pnls)
-            sharpe = (mean(pnls) / stdev(pnls) * math.sqrt(252)) if len(pnls) > 1 and stdev(pnls) > 0 else 0.0
-
-            # Max drawdown
-            cumulative = 0.0
-            peak = 0.0
-            max_dd = 0.0
-            for p in pnls:
-                cumulative += p
-                if cumulative > peak:
-                    peak = cumulative
-                dd = peak - cumulative
-                if dd > max_dd:
-                    max_dd = dd
-
+        if not closed:
             typer.echo(
-                f"{strat:<20} {total:>6} {len(open_trades):>5} {len(closed):>6} "
-                f"{win_pct:>5.1f}% ${avg_pnl:>7.2f} {sharpe:>7.2f} -${max_dd:>6.2f}"
+                f"{strat:<20} {len(trades):>6}   {'  -':>5} {'  -':>9} "
+                f"{'  -':>7} {'  -':>8} {'  -':>7} {'  -':>6}  -"
             )
+            continue
+
+        pnls = [t["pnl"] for t in closed]
+        n = len(pnls)
+        wins = sum(1 for p in pnls if p > 0)
+        win_pct = (wins / n) * 100
+
+        avg_pnl = mean(pnls)
+        sharpe = (mean(pnls) / stdev(pnls) * math.sqrt(252)) if n > 1 and stdev(pnls) > 0 else 0.0
+
+        # Sortino Ratio (downside deviation only)
+        neg = [p for p in pnls if p < 0]
+        if len(neg) > 1:
+            d_std = stdev(neg)
+        elif len(neg) == 1:
+            d_std = abs(neg[0])
         else:
-            typer.echo(
-                f"{strat:<20} {total:>6} {len(open_trades):>5} {len(closed):>6} "
-                f"{'  -':>6} {'  -':>9} {'  -':>7} {'  -':>8}"
-            )
+            d_std = 1e-9
+        sortino = (mean(pnls) / d_std * math.sqrt(252)) if d_std > 0 else 0.0
+
+        # Brier Score (entry_price as predicted prob; outcome=1 if pnl>0)
+        brier = mean(
+            (t["entry"] - (1.0 if t["pnl"] > 0 else 0.0)) ** 2 for t in closed
+        )
+
+        # F1 Score (YES trade → predicted positive; pnl > 0 → actual positive)
+        tp = sum(1 for t in closed if t["side"] == "YES" and t["pnl"] > 0)
+        fp = sum(1 for t in closed if t["side"] == "YES" and t["pnl"] <= 0)
+        fn = sum(1 for t in closed if t["side"] == "NO" and t["pnl"] > 0)
+        prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+
+        # Wilson 95% CI significance
+        z = 1.96
+        p_hat = wins / n
+        center = (p_hat + z**2 / (2 * n)) / (1 + z**2 / n)
+        margin = z * math.sqrt(p_hat * (1 - p_hat) / n + z**2 / (4 * n**2)) / (1 + z**2 / n)
+        ci_low = center - margin
+        is_sig = ci_low > 0.5
+        if is_sig:
+            sig_str = "✅"
+        elif abs(p_hat - 0.5) > 1e-4:
+            n_needed = int(math.ceil(z**2 / (4 * (p_hat - 0.5) ** 2)))
+            sig_str = f"❌ (need {n_needed})"
+        else:
+            sig_str = "❌"
+
+        typer.echo(
+            f"{strat:<20} {n:>6} {win_pct:>5.1f}% ${avg_pnl:>7.2f} "
+            f"{sharpe:>7.2f} {sortino:>8.2f} {brier:>7.3f} {f1:>6.3f}  {sig_str}"
+        )
 
     # Domain breakdown
     typer.echo("")
@@ -806,6 +837,173 @@ def run_daily_summary_command() -> None:
         f"{high_risk_count} high-risk flagged, "
         f"{whale_count} whale alert(s)"
     )
+
+
+@app.command("run-ofi-scan")
+def run_ofi_scan_command() -> None:
+    """📈 Module 5: Compute Order Flow Imbalance for tracked markets."""
+    from watchdog.db.init import init_db
+    from watchdog.market_data.polymarket_rest import PolymarketRestClient
+    from watchdog.strategies.ofi_signal import OFIScanner
+
+    settings = get_settings()
+    configure_logging(settings)
+
+    if not settings.enable_ofi_signal:
+        typer.echo("📈 OFI SCAN disabled via config (enable_ofi_signal=False)")
+        return
+
+    engine = build_engine(settings)
+    init_db(engine)
+    session_factory = build_session_factory(engine)
+    rest_client = PolymarketRestClient()
+    scanner = OFIScanner()
+
+    with session_factory() as session:
+        scanner.scan(session, rest_client)
+
+
+@app.command("run-ensemble-scan")
+def run_ensemble_scan_command() -> None:
+    """🧠 Module 6: Fetch Metaculus + Manifold ensemble probabilities for tracked markets."""
+    from watchdog.db.init import init_db
+    from watchdog.market_data.polymarket_rest import PolymarketRestClient
+    from watchdog.strategies.ensemble_signal import EnsembleScanner
+
+    settings = get_settings()
+    configure_logging(settings)
+
+    if not settings.enable_ensemble_signal:
+        typer.echo("🧠 ENSEMBLE SCAN disabled via config (enable_ensemble_signal=False)")
+        return
+
+    engine = build_engine(settings)
+    init_db(engine)
+    session_factory = build_session_factory(engine)
+    rest_client = PolymarketRestClient()
+    scanner = EnsembleScanner()
+
+    with session_factory() as session:
+        scanner.run(session, rest_client)
+
+
+@app.command("test-telegram")
+def test_telegram_command() -> None:
+    """Send a test Telegram message to verify setup."""
+    from watchdog.notifications.telegram import send_telegram
+
+    settings = get_settings()
+    configure_logging(settings)
+
+    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+        typer.echo("Telegram not configured (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing)")
+        return
+
+    send_telegram(
+        "🤖 poly-agent test — Telegram is working!",
+        settings.telegram_bot_token,
+        settings.telegram_chat_id,
+    )
+    typer.echo("✅ Telegram test message sent")
+
+
+@app.command("send-daily-telegram")
+def send_daily_telegram_command() -> None:
+    """Send formatted daily summary to Telegram."""
+    import math
+    from datetime import UTC, datetime, timedelta
+
+    from watchdog.db.init import init_db
+    from watchdog.db.models import ArbOpportunity, EnsembleSignal, OFISignal, Trade, WhaleActivity
+    from watchdog.notifications.telegram import send_telegram
+
+    settings = get_settings()
+    configure_logging(settings)
+    engine = build_engine(settings)
+    init_db(engine)
+    session_factory = build_session_factory(engine)
+
+    today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    with session_factory() as session:
+        # Arb opportunities today
+        arb_count = (
+            session.query(ArbOpportunity)
+            .filter(ArbOpportunity.timestamp >= today_start)
+            .count()
+        ) or 0
+
+        arb_profit_sum = (
+            session.query(ArbOpportunity)
+            .filter(ArbOpportunity.timestamp >= today_start)
+            .all()
+        )
+        daily_est_cents = sum((r.profit_cents or 0.0) for r in arb_profit_sum)
+
+        # OFI signals today
+        ofi_bullish = (
+            session.query(OFISignal)
+            .filter(OFISignal.scanned_at >= today_start, OFISignal.signal == "OFI_BULLISH")
+            .count()
+        ) or 0
+        ofi_bearish = (
+            session.query(OFISignal)
+            .filter(OFISignal.scanned_at >= today_start, OFISignal.signal == "OFI_BEARISH")
+            .count()
+        ) or 0
+
+        # Ensemble divergences today
+        ens_divs = (
+            session.query(EnsembleSignal)
+            .filter(EnsembleSignal.scanned_at >= today_start, EnsembleSignal.divergence > 0.05)
+            .count()
+        ) or 0
+
+        # Whale smart money signals today
+        whale_signals = (
+            session.query(WhaleActivity)
+            .filter(
+                WhaleActivity.timestamp >= today_start,
+                WhaleActivity.whale_signal == "smart_money_present",
+            )
+            .count()
+        ) or 0
+
+        # Resolution flags today
+        resolution_flagged = (
+            session.query(Trade)
+            .filter(
+                Trade.closed_at >= today_start,
+                Trade.close_reason.in_(["resolution_near_certain", "resolution_high_risk_partial"]),
+            )
+            .count()
+        ) or 0
+
+        # Net realized PnL (core, non-arb closed trades)
+        ARB_STRATEGIES = {"intra_event_arb", "pair_cost_arb"}
+        closed_core = (
+            session.query(Trade)
+            .filter(Trade.status == "closed", Trade.is_paper.is_(True))
+            .all()
+        )
+        net_pnl = sum(
+            (t.pnl or 0.0)
+            for t in closed_core
+            if (t.strategy or "") not in ARB_STRATEGIES
+        )
+
+    msg = (
+        f"🤖 poly-agent run complete — {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}\n"
+        f"📊 ARB: {arb_count} opps, est ${daily_est_cents / 100:.2f}\n"
+        f"📈 OFI: {ofi_bullish} bullish, {ofi_bearish} bearish\n"
+        f"🧠 ENSEMBLE: {ens_divs} divergences\n"
+        f"🐋 WHALES: {whale_signals} smart money signals\n"
+        f"⏰ RESOLUTION: {resolution_flagged} flagged\n"
+        f"💰 Net realized PnL: ${net_pnl:.2f}"
+    )
+
+    send_telegram(msg, settings.telegram_bot_token, settings.telegram_chat_id)
+    typer.echo(msg)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,9 @@ from watchdog.risk.vpin import TradeFlow, VPINCalculator, should_halt_maker
 from watchdog.services.market_sync import sync_markets_once
 from watchdog.signals.calibration import CalibrationSurfaceService
 from watchdog.signals.telegram_bot import TelegramAlerter
+from watchdog.market_data.polymarket_rest import PolymarketRestClient
+from watchdog.strategies.ensemble_signal import EnsembleScanner
+from watchdog.strategies.ofi_signal import OFIScanner
 
 LOGGER = logging.getLogger(__name__)
 
@@ -146,6 +149,9 @@ class PipelineRunner:
         self.vpin_calc = vpin_calc
         self.alerter = alerter
         self._background_tasks: set[asyncio.Task] = set()
+        self._rest_client = PolymarketRestClient()
+        self._ofi_scanner = OFIScanner()
+        self._ensemble_scanner = EnsembleScanner()
 
     async def _update_telemetry_price_after_delay(
         self,
@@ -482,15 +488,75 @@ class PipelineRunner:
                         signal.rationale = (signal.rationale or "") + f" | {executor_decision.rationale}"
 
                         if executor_decision.trade and executor_decision.side in {"YES", "NO"}:
+                            # OFI entry filter: skip if order book is imbalanced against trade direction
+                            if self.settings.enable_ofi_signal and market.yes_token_id:
+                                _ofi_result = self._ofi_scanner.compute_obi(
+                                    market.yes_token_id, self._rest_client
+                                )
+                                if _ofi_result is not None:
+                                    _obi, _, _ = _ofi_result
+                                    _dir_ok = (
+                                        _obi > 0.2
+                                        if executor_decision.side == "YES"
+                                        else _obi < -0.2
+                                    )
+                                    if not _dir_ok:
+                                        LOGGER.info(
+                                            "OFI filter: skipping %s obi=%.3f side=%s",
+                                            market.slug, _obi, executor_decision.side,
+                                        )
+                                        continue
+                                # else: OFI unavailable → allow entry
+
                             hist_edges, hist_returns = _load_historical_arrays(session, market.id)
+
+                            # Compute days to resolution for time-adjusted Kelly
+                            _days_to_res: float | None = None
+                            if market.resolution_time is not None:
+                                _rt = market.resolution_time
+                                if _rt.tzinfo is None:
+                                    _rt = _rt.replace(tzinfo=UTC)
+                                _days_to_res = max(
+                                    0.0,
+                                    (_rt - datetime.now(UTC)).total_seconds() / 86400.0,
+                                )
+                            else:
+                                LOGGER.warning(
+                                    "Kelly: missing resolution_time for %s — no time-adjust",
+                                    market.slug,
+                                )
+
                             sizing = self.sizer.size(
                                 p_model=calib.model_probability,
                                 p_market=market_prob,
                                 side=executor_decision.side,
                                 historical_edge_estimates=hist_edges,
                                 historical_trade_returns=hist_returns,
+                                days_to_resolution=_days_to_res,
+                                opportunity_cost_rate=self.settings.kelly_opportunity_cost_rate,
                             )
                             fraction = min(sizing.empirical_fraction, self.settings.max_position_per_market)
+
+                            # Ensemble Kelly boost: +20% if ensemble confirms direction (max 0.35)
+                            if self.settings.enable_ensemble_signal:
+                                _ens_prob = self._ensemble_scanner.get_cached_ensemble(
+                                    session, market.id
+                                )
+                                if _ens_prob is not None:
+                                    _confirms = (
+                                        _ens_prob > market_prob
+                                        and executor_decision.side == "YES"
+                                    ) or (
+                                        _ens_prob < market_prob
+                                        and executor_decision.side == "NO"
+                                    )
+                                    if _confirms:
+                                        fraction = min(fraction * 1.2, 0.35)
+                                        LOGGER.info(
+                                            "Ensemble boost: %s p_ens=%.3f → Kelly=%.4f",
+                                            market.slug, _ens_prob, fraction,
+                                        )
+
                             size_units = max(0.0, fraction)
 
                             if size_units > 0:
@@ -521,12 +587,30 @@ class PipelineRunner:
                                     ts_order = datetime.now(UTC)
                                     order_submission_latency_ms = 0
 
+                                # Use real CLOB executable price to avoid phantom profits:
+                                # YES buys pay the ask; NO buys pay (1 - best_bid_YES).
+                                if executor_decision.side == "YES":
+                                    _clob_exec = metrics.get("ask")
+                                else:
+                                    _bid = metrics.get("bid")
+                                    _clob_exec = (1.0 - _bid) if _bid is not None else None
+                                if _clob_exec is not None and abs(_clob_exec - market_prob) > 0.02:
+                                    LOGGER.warning(
+                                        "CLOB executable %.4f vs mid %.4f >2¢ for %s (side=%s)",
+                                        _clob_exec, market_prob, market.slug, executor_decision.side,
+                                    )
+                                _entry_price = (
+                                    executor_decision.limit_price
+                                    or _clob_exec
+                                    or market_prob
+                                )
+
                                 trade = Trade(
                                     market_id=market.id,
                                     signal_id=None,
                                     side=executor_decision.side,
                                     size=size_units,
-                                    entry_price=executor_decision.limit_price or market_prob,
+                                    entry_price=_entry_price,
                                     kelly_fraction=fraction,
                                     confidence_score=executor_decision.confidence,
                                     order_id=order_id,

@@ -1,150 +1,152 @@
-"""Module 4: Whale Flow Detector (Observation Only).
+"""Module 4: Smart Whale Watchlist via Polymarket Leaderboard.
 
-Fetches recent large trades from Polymarket's public activity API.
-Filters for trades > $2,000 on markets we currently track.
-Logs to whale_activity table and prints alerts.
+Replaces the broken /activity endpoint with:
+1. GET https://data-api.polymarket.com/rankings — fetch top-20 wallets by PnL
+2. Upsert into smart_wallets table
+3. For each tracked market, GET https://data-api.polymarket.com/holders?market=<condition_id>
+4. Flag SMART_MONEY_PRESENT if any top-20 wallet holds a position
 
 This module is OBSERVATION ONLY — no paper trades are created.
-After 2 weeks of data collection, the signal quality will be evaluated.
+Full try/except at every HTTP call — graceful degradation if any endpoint fails.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 from sqlalchemy.orm import Session
 
-from watchdog.db.models import Market, Trade, WhaleActivity
+from watchdog.db.models import Market, SmartWallet, Trade, WhaleActivity
 
 LOGGER = logging.getLogger(__name__)
 
-ACTIVITY_URL = "https://data-api.polymarket.com/activity"
-DEFAULT_THRESHOLD_USD = 2_000.0
-WHALE_ALERT_WINDOW_HOURS = 6
+RANKINGS_URL = "https://data-api.polymarket.com/rankings"
+HOLDERS_URL = "https://data-api.polymarket.com/holders"
 REQUEST_TIMEOUT = 15.0
+TOP_N_WALLETS = 20
 
 
 class WhaleFlowDetector:
-    """Detect and log large trades on tracked Polymarket markets."""
+    """Detect smart-money positions via Polymarket leaderboard and holders API."""
 
     def run(
         self,
         session: Session,
-        threshold_usd: float = DEFAULT_THRESHOLD_USD,
+        threshold_usd: float = 2_000.0,  # kept for API compatibility, unused
     ) -> dict[str, Any]:
-        """Fetch recent activity, log whale trades on tracked markets."""
+        """Fetch leaderboard, upsert smart wallets, detect positions in tracked markets."""
         print("\n🐋 WHALE WATCH")
 
-        # Fetch activity — fail gracefully on any error
-        raw_activity: list[dict[str, Any]] = []
+        # ── Step 1: Fetch leaderboard ─────────────────────────────────────────
+        top_wallets: dict[str, int] = {}  # proxy_wallet → rank
         try:
-            resp = httpx.get(
-                ACTIVITY_URL,
-                params={"limit": "50", "offset": "0"},
-                timeout=REQUEST_TIMEOUT,
-            )
+            resp = httpx.get(RANKINGS_URL, timeout=REQUEST_TIMEOUT)
             if resp.status_code != 200:
-                LOGGER.warning(
-                    "WHALE WATCH: endpoint returned %d — skipping", resp.status_code
+                LOGGER.warning("WHALE WATCH: rankings returned %d — skipping", resp.status_code)
+                print(f"🐋 WHALE WATCH done: rankings unavailable (HTTP {resp.status_code})")
+                return {"whales_found": 0, "on_tracked_markets": 0}
+            raw = resp.json()
+            if not isinstance(raw, list):
+                LOGGER.warning("WHALE WATCH: unexpected rankings format — skipping")
+                print("🐋 WHALE WATCH done: unexpected rankings format")
+                return {"whales_found": 0, "on_tracked_markets": 0}
+
+            now = datetime.now(UTC)
+            for rank, item in enumerate(raw[:TOP_N_WALLETS], start=1):
+                wallet = str(item.get("proxyWallet") or item.get("address") or "").strip()
+                if not wallet:
+                    continue
+                pnl = float(item.get("pnl") or item.get("profit") or 0.0)
+                volume = float(item.get("volume") or 0.0)
+                top_wallets[wallet] = rank
+
+                # Upsert into smart_wallets table (merge on proxy_wallet)
+                existing = (
+                    session.query(SmartWallet)
+                    .filter(SmartWallet.proxy_wallet == wallet)
+                    .first()
                 )
-                print(f"🐋 WHALE WATCH done: endpoint unavailable (HTTP {resp.status_code})")
-                return {"whales_found": 0, "on_tracked_markets": 0}
-            raw_activity = resp.json()
-            if not isinstance(raw_activity, list):
-                LOGGER.warning("WHALE WATCH: unexpected response format — skipping")
-                print("🐋 WHALE WATCH done: unexpected response format")
-                return {"whales_found": 0, "on_tracked_markets": 0}
+                if existing:
+                    existing.pnl = pnl
+                    existing.volume = volume
+                    existing.rank = rank
+                    existing.updated_at = now
+                else:
+                    session.add(
+                        SmartWallet(
+                            proxy_wallet=wallet,
+                            pnl=pnl,
+                            volume=volume,
+                            rank=rank,
+                            updated_at=now,
+                        )
+                    )
+            session.flush()
+
         except Exception as exc:
-            LOGGER.warning("WHALE WATCH: fetch failed — %s", exc)
-            print("🐋 WHALE WATCH done: fetch failed, skipping")
+            LOGGER.warning("WHALE WATCH: failed to fetch rankings — %s", exc)
+            print("🐋 WHALE WATCH done: rankings fetch failed, skipping")
             return {"whales_found": 0, "on_tracked_markets": 0}
 
-        # Build set of slugs we currently track (open positions)
-        tracked_slugs: set[str] = set()
-        open_market_ids: set[int] = set()
-        open_trades = session.query(Trade).filter(Trade.status == "open").all()
-        for t in open_trades:
-            open_market_ids.add(t.market_id)
+        # ── Step 2: Check holders on tracked markets ──────────────────────────
+        open_market_ids: set[int] = {
+            t.market_id
+            for t in session.query(Trade).filter(Trade.status == "open").all()
+        }
 
-        tracked_markets: dict[str, Market] = {}
+        smart_money_signals = 0
+
         for market_id in open_market_ids:
-            m = session.get(Market, market_id)
-            if m:
-                tracked_slugs.add(m.slug)
-                tracked_markets[m.slug] = m
-                if m.condition_id:
-                    tracked_markets[m.condition_id] = m
-
-        whales_found = 0
-        on_tracked = 0
-        now = datetime.now(UTC)
-        alert_cutoff = now - timedelta(hours=WHALE_ALERT_WINDOW_HOURS)
-
-        for item in raw_activity:
-            try:
-                amount = float(item.get("size") or item.get("amount") or 0)
-            except (TypeError, ValueError):
+            market: Market | None = session.get(Market, market_id)
+            if market is None or not market.condition_id:
                 continue
 
-            if amount < threshold_usd:
-                continue
-
-            whales_found += 1
-
-            # Resolve market slug from asset field
-            asset = str(item.get("asset") or item.get("conditionId") or item.get("market") or "")
-            market_obj = tracked_markets.get(asset)
-            market_slug = market_obj.slug if market_obj else asset
-
-            # Determine direction
-            side_raw = str(item.get("side") or item.get("outcome") or "BUY").upper()
-            direction = "YES" if side_raw in ("BUY", "YES") else "NO"
-            whale_signal = "buy_pressure" if direction == "YES" else "sell_pressure"
-
-            # Parse timestamp
-            ts_raw = item.get("timestamp") or item.get("createdAt") or item.get("time")
             try:
-                if isinstance(ts_raw, (int, float)):
-                    ts = datetime.fromtimestamp(ts_raw, tz=UTC)
-                elif isinstance(ts_raw, str):
-                    ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
-                else:
-                    ts = now
-            except Exception:
-                ts = now
-
-            prob = None
-            try:
-                prob = float(item.get("price") or item.get("probability") or 0)
-            except (TypeError, ValueError):
-                pass
-
-            # Log to whale_activity
-            record = WhaleActivity(
-                market_slug=market_slug,
-                direction=direction,
-                amount=amount,
-                timestamp=ts,
-                market_probability_at_time=prob,
-                whale_signal=whale_signal,
-            )
-            session.add(record)
-
-            # Alert if this is on a tracked market and within the 6h window
-            if market_obj is not None:
-                on_tracked += 1
-                if ts >= alert_cutoff:
-                    prob_str = f"prob={prob:.3f}" if prob is not None else "prob=unknown"
-                    print(
-                        f"🐋 WHALE ALERT: {market_slug} — {direction} ${amount:,.0f} at {prob_str}"
+                holders_resp = httpx.get(
+                    HOLDERS_URL,
+                    params={"market": market.condition_id},
+                    timeout=REQUEST_TIMEOUT,
+                )
+                if holders_resp.status_code != 200:
+                    LOGGER.debug(
+                        "WHALE WATCH: holders returned %d for %s — skipping",
+                        holders_resp.status_code, market.slug,
                     )
+                    continue
+                holders = holders_resp.json()
+                if not isinstance(holders, list):
+                    continue
+            except Exception as exc:
+                LOGGER.warning("WHALE WATCH: holders fetch failed for %s — %s", market.slug, exc)
+                continue
+
+            for holder in holders:
+                wallet = str(holder.get("proxyWallet") or holder.get("address") or "").strip()
+                if not wallet or wallet not in top_wallets:
+                    continue
+
+                rank = top_wallets[wallet]
+                smart_money_signals += 1
+                print(f"🐋 SMART MONEY: {market.slug} — wallet rank {rank}")
+
+                # Log to whale_activity
+                session.add(
+                    WhaleActivity(
+                        market_slug=market.slug,
+                        direction="YES",
+                        amount=float(holder.get("amount") or holder.get("value") or 0.0),
+                        timestamp=datetime.now(UTC),
+                        market_probability_at_time=None,
+                        whale_signal="smart_money_present",
+                    )
+                )
 
         session.commit()
         print(
-            f"🐋 WHALE WATCH done: {whales_found} whale trade(s) found, "
-            f"{on_tracked} on tracked market(s)"
+            f"🐋 WHALE WATCH done: {len(top_wallets)} wallets tracked, "
+            f"{smart_money_signals} smart money signal(s) found"
         )
-        return {"whales_found": whales_found, "on_tracked_markets": on_tracked}
+        return {"whales_found": len(top_wallets), "on_tracked_markets": smart_money_signals}

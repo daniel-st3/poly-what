@@ -118,6 +118,11 @@ class Settings(BaseSettings):
     enable_pair_cost_scan: bool = True
     enable_resolution_filter: bool = True
     enable_whale_detector: bool = True
+    enable_ofi_signal: bool = True
+    enable_ensemble_signal: bool = True
+
+    # Kelly sizing parameters
+    kelly_opportunity_cost_rate: float = Field(default=0.05, ge=0.0, le=1.0)
 
 
 @lru_cache(maxsize=1)

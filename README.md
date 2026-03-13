@@ -4,7 +4,7 @@
 ![SQLAlchemy](https://img.shields.io/badge/ORM-SQLAlchemy-green)
 ![DuckDB](https://img.shields.io/badge/data-DuckDB-orange)
 ![LLM](https://img.shields.io/badge/agents-dual--LLM-black)
-![CI](https://img.shields.io/badge/CI-GitHub%20Actions-purple)
+![Daily Run](https://github.com/daniel-st3/poly-agent/actions/workflows/daily_run.yml/badge.svg)
 
 Watchdog: Lean dual-agent prediction market intelligence system with calibrated mispricing detection, maker-side structural positioning, and full telemetry for edge validation.
 
@@ -100,6 +100,18 @@ Goal: validate latency and slippage, not maximize PnL.
 | Live trading disabled | Force paper mode |
 | Drawdown / win-rate guard fails | Abort live execution |
 | API or execution pre-check failure | Skip trade and log reason |
+
+## Telegram Alerts
+
+1. Create a bot via @BotFather → copy `TELEGRAM_BOT_TOKEN`
+2. Get your chat ID by messaging @userinfobot → copy `TELEGRAM_CHAT_ID`
+3. Add to `.env`: `TELEGRAM_BOT_TOKEN=<token>` and `TELEGRAM_CHAT_ID=<chat_id>`
+4. Test: `watchdog test-telegram`
+
+Daily summaries are sent automatically at the end of each `scripts/daily_validation.sh` run. GitHub Actions also sends a failure alert if the run fails.
+
+**Required GitHub Secrets** (for GitHub Actions):
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `MANIFOLD_API_KEY`, `MANIFOLD_USER_ID`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
 
 ## Main Commands
 

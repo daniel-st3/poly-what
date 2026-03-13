@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import math
+import logging
 from dataclasses import dataclass
 
 import numpy as np
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -65,6 +69,8 @@ class EmpiricalKellySizer:
         side: str,
         historical_edge_estimates: np.ndarray,
         historical_trade_returns: np.ndarray,
+        days_to_resolution: float | None = None,
+        opportunity_cost_rate: float = 0.05,
     ) -> SizingResult:
         full_kelly = self.full_kelly_fraction(p_model=p_model, p_market=p_market, side=side)
 
@@ -78,6 +84,19 @@ class EmpiricalKellySizer:
 
         uncertainty_scale = float(np.clip(1 - cv_edge, 0.0, 1.0))
         base_fraction = full_kelly * self.kelly_fraction * uncertainty_scale
+
+        # Time-adjusted Kelly: discount fraction by opportunity cost over holding period
+        _raw_fraction = base_fraction
+        if days_to_resolution is not None and days_to_resolution > 0:
+            time_factor = math.exp(-opportunity_cost_rate * days_to_resolution / 365.0)
+            base_fraction = base_fraction * time_factor
+        LOGGER.debug(
+            "Kelly raw=%.4f adjusted=%.4f (T=%.1fd r=%.2f)",
+            _raw_fraction,
+            base_fraction,
+            days_to_resolution or 0.0,
+            opportunity_cost_rate,
+        )
 
         returns = np.asarray(historical_trade_returns, dtype=np.float64)
         drawdown_p95 = self._drawdown_p95(returns, base_fraction)

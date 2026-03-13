@@ -1,0 +1,60 @@
+name: Daily Run
+
+on:
+  schedule:
+    - cron: '0 11,19 * * *'   # 6am and 2pm Colombia (UTC-5)
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download previous DB artifact
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: daily_run.yml
+          name: watchdog-db
+          path: .
+          if_no_artifact_found: ignore
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Run daily validation
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MANIFOLD_API_KEY: ${{ secrets.MANIFOLD_API_KEY }}
+          MANIFOLD_USER_ID: ${{ secrets.MANIFOLD_USER_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: bash scripts/daily_validation.sh
+
+      - name: Upload DB artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: watchdog-db
+          path: watchdog.db
+          retention-days: 7
+
+      - name: Notify failure via Telegram
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 -c "
+          import os, httpx
+          t = os.getenv('TELEGRAM_BOT_TOKEN'); c = os.getenv('TELEGRAM_CHAT_ID')
+          if t and c:
+              httpx.post(f'https://api.telegram.org/bot{t}/sendMessage',
+                  json={'chat_id': c, 'text': '⚠️ poly-agent GitHub Actions run FAILED — check logs'}, timeout=10)
+          "

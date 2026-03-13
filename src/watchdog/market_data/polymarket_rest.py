@@ -172,3 +172,43 @@ class PolymarketRestClient:
             "bid_volume": sum(float(b.get("size", 0)) for b in bids[:5]),
             "ask_volume": sum(float(a.get("size", 0)) for a in asks[:5]),
         }
+
+    def get_clob_executable_price(self, token_id: str, side: str = "BUY") -> float | None:
+        """Return the real executable price from CLOB (best_ask for BUY, best_bid for SELL).
+
+        Logs a warning if the executable price differs from mid by more than 2¢.
+        Returns None on any failure — callers should fall back to mid price.
+        """
+        try:
+            book = self.get_orderbook(token_id)
+            mid = book.get("mid", 0.5)
+            price = book["ask"] if side.upper() == "BUY" else book["bid"]
+            if abs(price - mid) > 0.02:
+                LOGGER.warning(
+                    "CLOB executable %.4f vs mid %.4f >2¢ (token=%s side=%s)",
+                    price,
+                    mid,
+                    token_id[:12],
+                    side,
+                )
+            return float(price)
+        except Exception as exc:
+            LOGGER.warning("get_clob_executable_price failed for %s: %s", token_id[:12], exc)
+            return None
+
+    def get_orderbook_levels(self, token_id: str, levels: int = 10) -> dict[str, list]:
+        """Return sorted bids/asks lists (up to `levels` each) for OFI computation."""
+        try:
+            resp = httpx.get(
+                f"{CLOB_BASE}/book",
+                params={"token_id": token_id},
+                timeout=self._timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            bids = sorted(data.get("bids", []), key=lambda x: -float(x["price"]))[:levels]
+            asks = sorted(data.get("asks", []), key=lambda x: float(x["price"]))[:levels]
+            return {"bids": bids, "asks": asks}
+        except Exception as exc:
+            LOGGER.warning("get_orderbook_levels failed for %s: %s", token_id[:12], exc)
+            return {"bids": [], "asks": []}

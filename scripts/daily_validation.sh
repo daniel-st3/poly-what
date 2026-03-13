@@ -65,6 +65,16 @@ echo ""
 echo "🐋 WHALE WATCH"
 watchdog run-whale-watch || echo "⚠️  Whale watch failed"
 
+# --- Module 5: OFI Signal ---
+echo ""
+echo "📈 OFI SCAN"
+watchdog run-ofi-scan || echo "⚠️  OFI scan failed"
+
+# --- Module 6: Ensemble Signal ---
+echo ""
+echo "🧠 ENSEMBLE SCAN"
+watchdog run-ensemble-scan || echo "⚠️  Ensemble scan failed"
+
 # --- Module Summary ---
 echo ""
 watchdog run-daily-summary || echo "⚠️ Daily summary failed"
@@ -82,5 +92,9 @@ if [ -n "$WIN_RATE" ]; then
         echo "⚠️  WARNING: Win rate dropped to ${WIN_RATE}% (below 50% threshold)"
     fi
 fi
+
+# --- Telegram summary ---
+echo ""
+watchdog send-daily-telegram || echo "⚠️  Telegram send failed (non-fatal)"
 
 echo "=== Run complete ==="

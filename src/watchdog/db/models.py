@@ -211,4 +211,40 @@ class WhaleActivity(Base):
     amount: Mapped[float] = mapped_column(Float)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     market_probability_at_time: Mapped[float | None] = mapped_column(Float, nullable=True)
-    whale_signal: Mapped[str] = mapped_column(String(32))  # buy_pressure / sell_pressure
+    whale_signal: Mapped[str] = mapped_column(String(32))  # buy_pressure / sell_pressure / smart_money_present
+
+
+class OFISignal(Base):
+    __tablename__ = "ofi_signals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    market_id: Mapped[int | None] = mapped_column(ForeignKey("markets.id"), nullable=True, index=True)
+    token_id: Mapped[str] = mapped_column(String(128))
+    obi_shares: Mapped[float] = mapped_column(Float)
+    obi_notional: Mapped[float] = mapped_column(Float)
+    signal: Mapped[str] = mapped_column(String(32))  # OFI_BULLISH / OFI_BEARISH / neutral
+    scanned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class EnsembleSignal(Base):
+    __tablename__ = "ensemble_signals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    market_id: Mapped[int | None] = mapped_column(ForeignKey("markets.id"), nullable=True, index=True)
+    p_metaculus: Mapped[float | None] = mapped_column(Float, nullable=True)
+    p_manifold: Mapped[float | None] = mapped_column(Float, nullable=True)
+    p_ensemble: Mapped[float] = mapped_column(Float)
+    p_polymarket: Mapped[float] = mapped_column(Float)
+    divergence: Mapped[float] = mapped_column(Float)
+    scanned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class SmartWallet(Base):
+    __tablename__ = "smart_wallets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    proxy_wallet: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    pnl: Mapped[float] = mapped_column(Float)
+    volume: Mapped[float] = mapped_column(Float)
+    rank: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
