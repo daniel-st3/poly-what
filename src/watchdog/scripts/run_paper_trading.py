@@ -14,6 +14,7 @@ from sqlalchemy import select
 from watchdog.core.config import get_settings
 from watchdog.core.exceptions import PolymarketCliError
 from watchdog.core.logging import configure_logging
+from watchdog.core.order_ids import normalize_platform_order_id
 from watchdog.db.init import init_db
 from watchdog.db.models import Market, Signal, Trade
 from watchdog.db.session import build_engine, build_session_factory
@@ -616,11 +617,14 @@ async def run_paper_trading_loop(
                             side,
                             stake,
                         )
-                        order_id = str(
-                            bet_response.get("id")
-                            or bet_response.get("betId")
-                            or bet_response.get("orderId")
-                            or order_id
+                        order_id = normalize_platform_order_id(
+                            platform=platform,
+                            provider_order_id=(
+                                bet_response.get("id")
+                                or bet_response.get("betId")
+                                or bet_response.get("orderId")
+                            ),
+                            fallback_order_id=order_id,
                         )
                     except (ManifoldAPIError, ValueError) as exc:
                         LOGGER.warning(

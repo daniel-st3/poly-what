@@ -92,6 +92,7 @@ async def test_manifold_paper_vpin_proxy_allows_trade(monkeypatch: pytest.Monkey
     assert signals[0].should_trade is True
     assert signals[0].rationale == "divergence_triggered"
     assert len(trades) == 1
+    assert trades[0].order_id == "paper-manifold-bet-1"
     assert len(bet_calls) == 1
 
     get_settings.cache_clear()

@@ -13,6 +13,7 @@ from watchdog.backtest.go_live_gate import check_go_live_gate
 from watchdog.core.config import get_settings
 from watchdog.core.exceptions import LiveTradingDisabledError
 from watchdog.core.logging import configure_logging
+from watchdog.core.order_ids import normalize_platform_order_id
 from watchdog.db.init import init_db
 from watchdog.db.models import Market, NewsEvent, Signal, Telemetry, Trade
 from watchdog.db.session import build_engine, build_session_factory
@@ -294,8 +295,9 @@ async def main(
                 order_size = position_usdc / quote_price
 
                 ts_order_submitted: datetime | None = None
-                order_id = f"sim-{uuid.uuid4().hex[:10]}"
                 is_paper = platform != "polymarket"
+                prefix = "paper" if is_paper else "live"
+                order_id = f"{prefix}-{platform}-{uuid.uuid4().hex[:10]}"
 
                 if platform == "polymarket":
                     ts_order_submitted = _now_utc()
@@ -307,7 +309,11 @@ async def main(
                         order_size,
                     )
                     payload = response.payload if isinstance(response.payload, dict) else {}
-                    order_id = str(payload.get("order_id") or payload.get("id") or order_id)
+                    order_id = normalize_platform_order_id(
+                        platform=platform,
+                        provider_order_id=payload.get("order_id") or payload.get("id"),
+                        fallback_order_id=order_id,
+                    )
                 else:
                     ts_order_submitted = _now_utc()
 

@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from watchdog.core.config import Settings
+from watchdog.core.order_ids import normalize_platform_order_id
 from watchdog.db.models import Signal, Telemetry, Trade
 from watchdog.market_data.polymarket_cli import PolymarketCli
 
@@ -121,7 +122,8 @@ class OrderExecutor:
                         "is_paper": True,
                     }
 
-                order_id = f"paper-{signal.id}-{datetime.now(UTC).strftime('%H%M%S%f')}"
+                prefix = "live" if live_mode else "paper"
+                order_id = f"{prefix}-polymarket-{signal.id}-{datetime.now(UTC).strftime('%H%M%S%f')}"
                 if live_mode:
                     response = self.polymarket_cli.create_limit_order(
                         token_id=str(snapshot.market_id),
@@ -131,7 +133,11 @@ class OrderExecutor:
                         post_only=True,
                     )
                     payload = response.payload if isinstance(response.payload, dict) else {}
-                    order_id = str(payload.get("order_id") or payload.get("id") or order_id)
+                    order_id = normalize_platform_order_id(
+                        platform="polymarket",
+                        provider_order_id=payload.get("order_id") or payload.get("id"),
+                        fallback_order_id=order_id,
+                    )
 
                 trade = Trade(
                     market_id=snapshot.market_id,

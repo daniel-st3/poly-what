@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from watchdog.core.config import Settings
+from watchdog.core.order_ids import normalize_platform_order_id
 from watchdog.db.models import Market, MarketSnapshot, NewsEvent, Signal, Telemetry, Trade
 from watchdog.llm.executor import BaseExecutorAgent
 from watchdog.llm.router import BaseRouterAgent
@@ -494,8 +495,9 @@ class PipelineRunner:
 
                             if size_units > 0:
                                 signal.should_trade = True
-                                order_id = f"paper-{pipeline_id}"
                                 is_paper = not self.settings.enable_live_trading
+                                prefix = "paper" if is_paper else "live"
+                                order_id = f"{prefix}-polymarket-{pipeline_id}"
 
                                 if self.settings.enable_live_trading:
                                     order_start = time.perf_counter()
@@ -509,7 +511,11 @@ class PipelineRunner:
                                     order_submission_latency_ms = int((time.perf_counter() - order_start) * 1000)
                                     payload = order_resp.payload
                                     if isinstance(payload, dict):
-                                        order_id = str(payload.get("order_id") or payload.get("id") or order_id)
+                                        order_id = normalize_platform_order_id(
+                                            platform="polymarket",
+                                            provider_order_id=payload.get("order_id") or payload.get("id"),
+                                            fallback_order_id=order_id,
+                                        )
                                     ts_order = datetime.now(UTC)
                                 else:
                                     ts_order = datetime.now(UTC)
