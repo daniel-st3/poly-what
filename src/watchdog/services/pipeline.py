@@ -18,13 +18,13 @@ from watchdog.db.models import Market, MarketSnapshot, NewsEvent, Signal, Teleme
 from watchdog.llm.executor import BaseExecutorAgent
 from watchdog.llm.router import BaseRouterAgent
 from watchdog.market_data.polymarket_cli import PolymarketCli
+from watchdog.market_data.polymarket_rest import PolymarketRestClient
 from watchdog.news.models import NewsItem
 from watchdog.risk.kelly import EmpiricalKellySizer
 from watchdog.risk.vpin import TradeFlow, VPINCalculator, should_halt_maker
 from watchdog.services.market_sync import sync_markets_once
 from watchdog.signals.calibration import CalibrationSurfaceService
 from watchdog.signals.telegram_bot import TelegramAlerter
-from watchdog.market_data.polymarket_rest import PolymarketRestClient
 from watchdog.strategies.ensemble_signal import EnsembleScanner
 from watchdog.strategies.ofi_signal import OFIScanner
 

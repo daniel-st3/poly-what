@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
-
 from dateutil import parser as dtparser
 from sqlalchemy import select
 
@@ -591,7 +590,7 @@ async def run_paper_trading_loop(
                 kelly_fraction = min(kelly_fraction, settings.max_position_per_market)
                 kelly_fraction = max(kelly_fraction, 0.001)
                 # Size against free_capital so stakes shrink naturally as capital deploys.
-                # Hard cap: never more than max_position_per_market × original bankroll.
+                # Hard cap: never more than max_position_per_market x original bankroll.
                 stake = free_capital * kelly_fraction
                 stake = max(stake, 1.0)
                 stake = min(stake, bankroll * settings.max_position_per_market)

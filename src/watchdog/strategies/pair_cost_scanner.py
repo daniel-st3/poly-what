@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from sqlalchemy.orm import Session
 
-from watchdog.db.models import ArbOpportunity, Market, Trade
+from watchdog.db.models import ArbOpportunity, Market
 
 if TYPE_CHECKING:
     from watchdog.market_data.polymarket_rest import PolymarketRestClient
@@ -39,7 +39,7 @@ class PairCostScanner:
     def scan(
         self,
         session: Session,
-        rest_client: "PolymarketRestClient",
+        rest_client: PolymarketRestClient,
         is_paper: bool = True,
     ) -> dict[str, Any]:
         """Run one scan cycle. Returns summary stats dict."""
@@ -62,7 +62,7 @@ class PairCostScanner:
     def _gather_candidates(
         self,
         session: Session,
-        rest_client: "PolymarketRestClient",
+        rest_client: PolymarketRestClient,
     ) -> list[tuple[str, str, str]]:
         """Return list of (slug, yes_token_id, no_token_id) to check."""
         seen: set[str] = set()
@@ -102,7 +102,7 @@ class PairCostScanner:
 
     def _fetch_book_with_retry(
         self,
-        rest_client: "PolymarketRestClient",
+        rest_client: PolymarketRestClient,
         token_id: str,
     ) -> dict[str, Any] | None:
         """Fetch orderbook with 429 retry logic. Returns None on unrecoverable failure."""
@@ -127,7 +127,7 @@ class PairCostScanner:
     def _check_market(
         self,
         session: Session,
-        rest_client: "PolymarketRestClient",
+        rest_client: PolymarketRestClient,
         slug: str,
         yes_token_id: str,
         no_token_id: str,

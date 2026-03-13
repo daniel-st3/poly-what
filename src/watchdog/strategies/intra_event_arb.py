@@ -10,6 +10,7 @@ In paper mode, records linked paper trades in trades table (strategy="intra_even
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -36,7 +37,7 @@ class IntraEventArbScanner:
     def scan(
         self,
         session: Session,
-        rest_client: "PolymarketRestClient",
+        rest_client: PolymarketRestClient,
         is_paper: bool = True,
     ) -> dict[str, Any]:
         """Run one scan cycle. Returns summary stats dict."""
@@ -97,10 +98,8 @@ class IntraEventArbScanner:
                 except Exception:
                     outcome_prices = []
             if outcome_prices:
-                try:
+                with contextlib.suppress(TypeError, ValueError, IndexError):
                     yes_prices.append(float(outcome_prices[0]))
-                except (TypeError, ValueError, IndexError):
-                    pass
             total_volume += float(m.get("volume") or 0)
 
         if not yes_prices or len(yes_prices) < 2:
@@ -173,7 +172,7 @@ class IntraEventArbScanner:
         now = datetime.now(UTC)
         group_id = f"arb_{event_slug}_{int(now.timestamp())}"
 
-        for i, (m, yes_price) in enumerate(zip(markets, yes_prices)):
+        for i, (m, yes_price) in enumerate(zip(markets, yes_prices, strict=False)):
             # Skip legs with very low prices (< 1%) — these are near-zero-probability
             # markets that cause exit_manager to produce misleading PnL figures.
             if yes_price < 0.01:

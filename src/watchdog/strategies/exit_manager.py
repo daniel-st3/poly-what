@@ -277,7 +277,7 @@ class ExitManager:
     ) -> float | None:
         """Try to fetch a current YES probability for a market not in the scan batch.
 
-        Returns the YES probability (0–1) on success, None on any failure.
+        Returns the YES probability (0-1) on success, None on any failure.
         """
         try:
             if platform == "manifold" and manifold is not None:

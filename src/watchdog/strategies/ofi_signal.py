@@ -44,7 +44,7 @@ class OFIScanner:
     def compute_obi(
         self,
         token_id: str,
-        rest_client: "PolymarketRestClient",
+        rest_client: PolymarketRestClient,
     ) -> tuple[float, float, str] | None:
         """Compute OBI for a single token.
 
@@ -88,7 +88,7 @@ class OFIScanner:
     def scan(
         self,
         session: Session,
-        rest_client: "PolymarketRestClient",
+        rest_client: PolymarketRestClient,
     ) -> dict[str, Any]:
         """Scan all open-trade markets. Persist OFISignal rows. Return summary."""
         print("\n📈 OFI SCAN")

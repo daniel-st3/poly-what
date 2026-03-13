@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 
 from sqlalchemy import text
@@ -26,8 +27,5 @@ def init_db(engine: Engine) -> None:
 def _run_migrations(engine: Engine) -> None:
     with engine.begin() as conn:
         for stmt in _MIGRATIONS:
-            try:
+            with contextlib.suppress(Exception):
                 conn.execute(text(stmt))
-            except Exception:
-                # Column already exists — SQLite raises OperationalError; ignore.
-                pass

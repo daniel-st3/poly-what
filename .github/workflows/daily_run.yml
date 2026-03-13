@@ -2,7 +2,8 @@ name: Daily Run
 
 on:
   schedule:
-    - cron: '0 11,19 * * *'   # 6am and 2pm Colombia (UTC-5)
+    - cron: '0 11 * * *'    # 6am Colombia (UTC-5)
+    - cron: '0 19 * * *'    # 2pm Colombia (UTC-5)
   workflow_dispatch:
 
 jobs:
@@ -15,8 +16,13 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
       - name: Download previous DB artifact
-        uses: dawidd6/action-download-artifact@v3
+        uses: dawidd6/action-download-artifact@v6
         with:
           workflow: daily_run.yml
           name: watchdog-db
@@ -24,10 +30,40 @@ jobs:
           if_no_artifact_found: ignore
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install dependencies
-        run: pip install -e .
+      - name: Init DB (idempotent)
+        run: watchdog init-db
 
-      - name: Run daily validation
+      - name: Run Polymarket paper trading
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: watchdog run-paper-trading --platform polymarket --iterations 5 --max-markets 300 || echo "⚠️ Polymarket run failed"
+
+      - name: Run Manifold paper trading
+        env:
+          MANIFOLD_API_KEY: ${{ secrets.MANIFOLD_API_KEY }}
+          MANIFOLD_USER_ID: ${{ secrets.MANIFOLD_USER_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: watchdog run-paper-trading --platform manifold --iterations 5 || echo "⚠️ Manifold run failed"
+
+      - name: Run module scans
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          watchdog run-intra-event-arb    || echo "⚠️ ARB scan failed"
+          watchdog run-pair-cost-scan     || echo "⚠️ Pair cost scan failed"
+          watchdog run-resolution-check   || echo "⚠️ Resolution check failed"
+          watchdog run-whale-watch        || echo "⚠️ Whale watch failed"
+          watchdog run-ofi-scan           || echo "⚠️ OFI scan failed"
+          watchdog run-ensemble-scan      || echo "⚠️ Ensemble scan failed"
+          watchdog run-daily-summary      || echo "⚠️ Daily summary failed"
+
+      - name: Analyze paper trades
+        run: watchdog analyze-paper-trades || echo "⚠️ Analysis failed"
+
+      - name: Send Telegram summary
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -35,7 +71,7 @@ jobs:
           MANIFOLD_USER_ID: ${{ secrets.MANIFOLD_USER_ID }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: bash scripts/daily_validation.sh
+        run: watchdog send-daily-telegram || echo "⚠️ Telegram send failed (non-fatal)"
 
       - name: Upload DB artifact
         if: always()

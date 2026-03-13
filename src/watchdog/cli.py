@@ -427,11 +427,11 @@ def analyze_paper_trades_command() -> None:
 
     settings = get_settings()
     engine = build_engine(settings)
-    SessionFactory = build_session_factory(engine)
+    session_factory = build_session_factory(engine)
 
-    ARB_STRATEGIES = {"intra_event_arb", "pair_cost_arb"}
+    arb_strategies = {"intra_event_arb", "pair_cost_arb"}
 
-    with SessionFactory() as session:
+    with session_factory() as session:
         rows = session.execute(
             select(Trade, Market)
             .join(Market, Trade.market_id == Market.id)
@@ -443,8 +443,8 @@ def analyze_paper_trades_command() -> None:
         raise typer.Exit()
 
     # Separate arb trades from core bot trades
-    arb_rows = [(t, m) for t, m in rows if (t.strategy or "") in ARB_STRATEGIES]
-    core_rows = [(t, m) for t, m in rows if (t.strategy or "") not in ARB_STRATEGIES]
+    arb_rows = [(t, m) for t, m in rows if (t.strategy or "") in arb_strategies]
+    core_rows = [(t, m) for t, m in rows if (t.strategy or "") not in arb_strategies]
 
     if not core_rows:
         typer.echo("No core (non-arb) paper trades found.")
@@ -482,7 +482,7 @@ def analyze_paper_trades_command() -> None:
 
     for strat, trades in sorted(strategies.items()):
         closed = [t for t in trades if t["status"] == "closed"]
-        open_trades = [t for t in trades if t["status"] == "open"]
+        [t for t in trades if t["status"] == "open"]
 
         if not closed:
             typer.echo(
@@ -532,7 +532,7 @@ def analyze_paper_trades_command() -> None:
         if is_sig:
             sig_str = "✅"
         elif abs(p_hat - 0.5) > 1e-4:
-            n_needed = int(math.ceil(z**2 / (4 * (p_hat - 0.5) ** 2)))
+            n_needed = math.ceil(z**2 / (4 * (p_hat - 0.5) ** 2))
             sig_str = f"❌ (need {n_needed})"
         else:
             sig_str = "❌"
@@ -559,7 +559,7 @@ def analyze_paper_trades_command() -> None:
         typer.echo("")
         typer.echo("Arb Strategy Trades (excluded from main P&L):")
         arb_by_strat: dict[str, list] = {}
-        for t, m in arb_rows:
+        for t, _m in arb_rows:
             s = t.strategy or "arb"
             arb_by_strat.setdefault(s, []).append(t)
         for s, trades_list in sorted(arb_by_strat.items()):
@@ -781,8 +781,6 @@ def run_daily_summary_command() -> None:
     """Print a one-line summary of today's module results."""
     from datetime import UTC, datetime, timedelta
 
-    from sqlalchemy import select
-
     from watchdog.db.init import init_db
     from watchdog.db.models import ArbOpportunity, Trade, WhaleActivity
 
@@ -910,8 +908,7 @@ def test_telegram_command() -> None:
 @app.command("send-daily-telegram")
 def send_daily_telegram_command() -> None:
     """Send formatted daily summary to Telegram."""
-    import math
-    from datetime import UTC, datetime, timedelta
+    from datetime import UTC, datetime
 
     from watchdog.db.init import init_db
     from watchdog.db.models import ArbOpportunity, EnsembleSignal, OFISignal, Trade, WhaleActivity
@@ -980,7 +977,7 @@ def send_daily_telegram_command() -> None:
         ) or 0
 
         # Net realized PnL (core, non-arb closed trades)
-        ARB_STRATEGIES = {"intra_event_arb", "pair_cost_arb"}
+        _arb_strats = {"intra_event_arb", "pair_cost_arb"}
         closed_core = (
             session.query(Trade)
             .filter(Trade.status == "closed", Trade.is_paper.is_(True))
@@ -989,7 +986,7 @@ def send_daily_telegram_command() -> None:
         net_pnl = sum(
             (t.pnl or 0.0)
             for t in closed_core
-            if (t.strategy or "") not in ARB_STRATEGIES
+            if (t.strategy or "") not in _arb_strats
         )
 
     msg = (

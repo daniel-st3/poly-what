@@ -8,21 +8,20 @@ P_ensemble = 0.56 * P_metaculus + 0.44 * P_manifold
 Flags ENSEMBLE_DIVERGENCE when |P_ensemble - P_polymarket| > 0.05.
 
 Used as a Kelly boost in the calibration pipeline:
-  - When ensemble confirms trade direction → Kelly × 1.2, capped at 0.35
+  - When ensemble confirms trade direction -> Kelly x 1.2, capped at 0.35
 
 Stores results in the ensemble_signals table.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
-import urllib.parse
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import httpx
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from watchdog.db.models import EnsembleSignal, Market, Trade
@@ -89,10 +88,8 @@ class EnsembleScanner:
                 else:
                     p = None
                 if p is not None:
-                    try:
+                    with contextlib.suppress(TypeError, ValueError):
                         best_prob = float(p)
-                    except (TypeError, ValueError):
-                        pass
 
             return best_prob
         except Exception as exc:
@@ -123,10 +120,8 @@ class EnsembleScanner:
                 best_score = score
                 p = item.get("probability")
                 if p is not None:
-                    try:
+                    with contextlib.suppress(TypeError, ValueError):
                         best_prob = float(p)
-                    except (TypeError, ValueError):
-                        pass
 
             return best_prob
         except Exception as exc:
@@ -158,7 +153,7 @@ class EnsembleScanner:
     def run(
         self,
         session: Session,
-        rest_client: "PolymarketRestClient",
+        rest_client: PolymarketRestClient,
     ) -> dict[str, Any]:
         """Scan open-trade markets. Fetch ensemble. Persist EnsembleSignal rows."""
         print("\n🧠 ENSEMBLE SCAN")
