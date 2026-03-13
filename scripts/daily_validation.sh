@@ -45,6 +45,30 @@ else
     echo "⚠️  Polymarket run failed (exit code $?). Continuing to analysis..."
 fi
 
+# --- Module 1: Intra-Event ARB Scanner ---
+echo ""
+echo "📊 ARB SCAN"
+watchdog run-intra-event-arb || echo "⚠️  ARB scan failed"
+
+# --- Module 2: Pair Cost Scanner ---
+echo ""
+echo "🔄 PAIR COST"
+watchdog run-pair-cost-scan || echo "⚠️  Pair cost scan failed"
+
+# --- Module 3: Resolution Proximity Filter ---
+echo ""
+echo "⏰ RESOLUTION CHECK"
+watchdog run-resolution-check || echo "⚠️  Resolution check failed"
+
+# --- Module 4: Whale Flow Detector ---
+echo ""
+echo "🐋 WHALE WATCH"
+watchdog run-whale-watch || echo "⚠️  Whale watch failed"
+
+# --- Module Summary ---
+echo ""
+watchdog run-daily-summary || echo "⚠️ Daily summary failed"
+
 # --- Analysis ---
 echo ""
 echo "Current stats:"

@@ -121,6 +121,7 @@ class Trade(Base):
     close_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     high_water_mark: Mapped[float | None] = mapped_column(Float, nullable=True)
     remaining_fraction: Mapped[float | None] = mapped_column(Float, nullable=True, default=1.0)
+    resolution_flag: Mapped[str | None] = mapped_column(String(32), nullable=True)  # normal / near_certain / high_risk_close
 
     market: Mapped[Market] = relationship(back_populates="trades")
 
@@ -186,3 +187,28 @@ class MakerQuote(Base):
     canceled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     market: Mapped[Market] = relationship(back_populates="maker_quotes")
+
+
+class ArbOpportunity(Base):
+    __tablename__ = "arb_opportunities"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_slug: Mapped[str] = mapped_column(String(255), index=True)
+    type: Mapped[str] = mapped_column(String(32))  # underpriced / overpriced / buy_merge / split_sell
+    sum_of_yes: Mapped[float | None] = mapped_column(Float, nullable=True)
+    profit_cents: Mapped[float] = mapped_column(Float)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    was_actioned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    strategy: Mapped[str] = mapped_column(String(32), index=True)  # intra_event_arb / pair_cost_arb
+
+
+class WhaleActivity(Base):
+    __tablename__ = "whale_activity"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    market_slug: Mapped[str] = mapped_column(String(255), index=True)
+    direction: Mapped[str] = mapped_column(String(8))  # YES / NO
+    amount: Mapped[float] = mapped_column(Float)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    market_probability_at_time: Mapped[float | None] = mapped_column(Float, nullable=True)
+    whale_signal: Mapped[str] = mapped_column(String(32))  # buy_pressure / sell_pressure

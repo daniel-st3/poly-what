@@ -113,6 +113,12 @@ class Settings(BaseSettings):
 
     experiment_id: str = "feb2026_v1"
 
+    # Strategy module feature flags
+    enable_intra_event_arb: bool = True
+    enable_pair_cost_scan: bool = True
+    enable_resolution_filter: bool = True
+    enable_whale_detector: bool = True
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

@@ -14,6 +14,7 @@ LOGGER = logging.getLogger(__name__)
 _MIGRATIONS = [
     "ALTER TABLE trades ADD COLUMN high_water_mark REAL",
     "ALTER TABLE trades ADD COLUMN remaining_fraction REAL DEFAULT 1.0",
+    "ALTER TABLE trades ADD COLUMN resolution_flag TEXT",
 ]
 
 

@@ -89,6 +89,63 @@ class PolymarketRestClient:
     # Orderbook (CLOB API)
     # ------------------------------------------------------------------
 
+    def get_events(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Return active multi-outcome events from the Gamma API."""
+        events: list[dict[str, Any]] = []
+        offset = 0
+        batch_size = 100
+
+        while len(events) < limit:
+            fetch_limit = min(batch_size, limit - len(events))
+            params: dict[str, str] = {
+                "limit": str(fetch_limit),
+                "offset": str(offset),
+                "active": "true",
+                "closed": "false",
+            }
+            resp = httpx.get(
+                f"{GAMMA_BASE}/events",
+                params=params,
+                timeout=self._timeout,
+            )
+            resp.raise_for_status()
+            raw: list[dict[str, Any]] = resp.json()
+
+            if not raw:
+                break
+
+            for item in raw:
+                markets = item.get("markets") or []
+                if len(markets) < 2:
+                    continue
+                events.append(
+                    {
+                        "event_slug": item.get("slug") or item.get("id", ""),
+                        "title": item.get("title") or "",
+                        "markets": [
+                            {
+                                "slug": m.get("slug") or m.get("conditionId", ""),
+                                "question": m.get("question") or "",
+                                "condition_id": m.get("conditionId"),
+                                "outcome_prices": m.get("outcomePrices") or [],
+                                "volume": float(m.get("volume") or 0),
+                                "yes_token_id": (
+                                    json.loads(m["clobTokenIds"])[0]
+                                    if isinstance(m.get("clobTokenIds"), str) and m.get("clobTokenIds")
+                                    else (m.get("clobTokenIds") or [None])[0]
+                                ),
+                            }
+                            for m in markets
+                        ],
+                    }
+                )
+
+            offset += len(raw)
+            if len(raw) < fetch_limit:
+                break
+
+        return events[:limit]
+
     def get_orderbook(self, token_id: str) -> dict[str, Any]:
         """Fetch top-of-book for a given outcome token."""
         resp = httpx.get(

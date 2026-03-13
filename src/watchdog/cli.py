@@ -429,6 +429,8 @@ def analyze_paper_trades_command() -> None:
     engine = build_engine(settings)
     SessionFactory = build_session_factory(engine)
 
+    ARB_STRATEGIES = {"intra_event_arb", "pair_cost_arb"}
+
     with SessionFactory() as session:
         rows = session.execute(
             select(Trade, Market)
@@ -439,6 +441,16 @@ def analyze_paper_trades_command() -> None:
     if not rows:
         typer.echo("No paper trades found.")
         raise typer.Exit()
+
+    # Separate arb trades from core bot trades
+    arb_rows = [(t, m) for t, m in rows if (t.strategy or "") in ARB_STRATEGIES]
+    core_rows = [(t, m) for t, m in rows if (t.strategy or "") not in ARB_STRATEGIES]
+
+    if not core_rows:
+        typer.echo("No core (non-arb) paper trades found.")
+        raise typer.Exit()
+
+    rows = core_rows  # main dashboard uses core trades only
 
     # Group by strategy
     strategies: dict[str, list[dict]] = {}
@@ -510,6 +522,20 @@ def analyze_paper_trades_command() -> None:
 
     for domain, count in sorted(domains.items(), key=lambda x: -x[1]):
         typer.echo(f"  {domain:<20} {count} trades")
+
+    # Arb strategy summary (excluded from main P&L to avoid distortion)
+    if arb_rows:
+        typer.echo("")
+        typer.echo("Arb Strategy Trades (excluded from main P&L):")
+        arb_by_strat: dict[str, list] = {}
+        for t, m in arb_rows:
+            s = t.strategy or "arb"
+            arb_by_strat.setdefault(s, []).append(t)
+        for s, trades_list in sorted(arb_by_strat.items()):
+            open_c = sum(1 for t in trades_list if t.status == "open")
+            closed_c = sum(1 for t in trades_list if t.status == "closed")
+            pnl_sum = sum((t.pnl or 0.0) for t in trades_list if t.status == "closed")
+            typer.echo(f"  {s:<22} total={len(trades_list)} open={open_c} closed={closed_c} realized_pnl=${pnl_sum:.2f}")
 
     typer.echo("")
 
@@ -598,6 +624,188 @@ def find_quick_markets_command(
         typer.echo(f"\n{len(candidates)} total markets match filters ({len(unified_markets)} scanned)")
 
     asyncio.run(_find())
+
+
+@app.command("run-intra-event-arb")
+def run_intra_event_arb_command() -> None:
+    """📊 Module 1: Scan Polymarket multi-outcome events for YES-sum arbitrage."""
+    from watchdog.db.init import init_db
+    from watchdog.market_data.polymarket_rest import PolymarketRestClient
+    from watchdog.strategies.intra_event_arb import IntraEventArbScanner
+
+    settings = get_settings()
+    configure_logging(settings)
+
+    if not settings.enable_intra_event_arb:
+        typer.echo("📊 ARB SCAN disabled via config (enable_intra_event_arb=False)")
+        return
+
+    engine = build_engine(settings)
+    init_db(engine)
+    session_factory = build_session_factory(engine)
+    rest_client = PolymarketRestClient()
+    scanner = IntraEventArbScanner()
+
+    with session_factory() as session:
+        scanner.scan(session, rest_client, is_paper=True)
+
+
+@app.command("run-pair-cost-scan")
+def run_pair_cost_scan_command() -> None:
+    """🔄 Module 2: Scan binary markets for YES+NO pair cost arbitrage."""
+    from watchdog.db.init import init_db
+    from watchdog.market_data.polymarket_rest import PolymarketRestClient
+    from watchdog.strategies.pair_cost_scanner import PairCostScanner
+
+    settings = get_settings()
+    configure_logging(settings)
+
+    if not settings.enable_pair_cost_scan:
+        typer.echo("🔄 PAIR COST disabled via config (enable_pair_cost_scan=False)")
+        return
+
+    engine = build_engine(settings)
+    init_db(engine)
+    session_factory = build_session_factory(engine)
+    rest_client = PolymarketRestClient()
+    scanner = PairCostScanner()
+
+    with session_factory() as session:
+        scanner.scan(session, rest_client, is_paper=True)
+
+
+@app.command("run-resolution-check")
+def run_resolution_check_command() -> None:
+    """⏰ Module 3: Flag open trades approaching resolution and act on near-certain/high-risk ones."""
+    import logging as _logging
+
+    from watchdog.db.init import init_db
+    from watchdog.db.models import Market, Trade
+    from watchdog.market_data.polymarket_rest import PolymarketRestClient
+    from watchdog.strategies.resolution_filter import ResolutionProximityFilter
+
+    settings = get_settings()
+    configure_logging(settings)
+
+    if not settings.enable_resolution_filter:
+        typer.echo("⏰ RESOLUTION CHECK disabled via config (enable_resolution_filter=False)")
+        return
+
+    _log = _logging.getLogger(__name__)
+    engine = build_engine(settings)
+    init_db(engine)
+    session_factory = build_session_factory(engine)
+    rest_client = PolymarketRestClient()
+
+    with session_factory() as session:
+        # Collect unique markets for open paper trades that have yes_token_id
+        open_trades = session.query(Trade).filter(Trade.status == "open", Trade.is_paper.is_(True)).all()
+        market_ids: set[int] = {t.market_id for t in open_trades}
+
+        current_prices: dict[int, float] = {}
+        for market_id in market_ids:
+            market = session.get(Market, market_id)
+            if market is None or not market.yes_token_id:
+                continue
+            try:
+                book = rest_client.get_orderbook(market.yes_token_id)
+                current_prices[market_id] = book["mid"]
+            except Exception as exc:
+                _log.warning(
+                    "RESOLUTION CHECK: failed to fetch price for market_id=%d (%s) — %s",
+                    market_id,
+                    market.slug,
+                    exc,
+                )
+                # Skip this market — never pass None
+
+        resolution_filter = ResolutionProximityFilter()
+        resolution_filter.run(session, current_prices, is_paper=True)
+
+
+@app.command("run-whale-watch")
+def run_whale_watch_command() -> None:
+    """🐋 Module 4: Detect large trades on tracked Polymarket markets (observation only)."""
+    from watchdog.db.init import init_db
+    from watchdog.strategies.whale_detector import WhaleFlowDetector
+
+    settings = get_settings()
+    configure_logging(settings)
+
+    if not settings.enable_whale_detector:
+        typer.echo("🐋 WHALE WATCH disabled via config (enable_whale_detector=False)")
+        return
+
+    engine = build_engine(settings)
+    init_db(engine)
+    session_factory = build_session_factory(engine)
+    detector = WhaleFlowDetector()
+
+    with session_factory() as session:
+        detector.run(session)
+
+
+@app.command("run-daily-summary")
+def run_daily_summary_command() -> None:
+    """Print a one-line summary of today's module results."""
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import select
+
+    from watchdog.db.init import init_db
+    from watchdog.db.models import ArbOpportunity, Trade, WhaleActivity
+
+    settings = get_settings()
+    configure_logging(settings)
+    engine = build_engine(settings)
+    init_db(engine)
+    session_factory = build_session_factory(engine)
+
+    today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    with session_factory() as session:
+        arb_count = (
+            session.query(ArbOpportunity)
+            .filter(ArbOpportunity.timestamp >= today_start)
+            .count()
+        )
+        pair_cost_count = (
+            session.query(ArbOpportunity)
+            .filter(
+                ArbOpportunity.timestamp >= today_start,
+                ArbOpportunity.strategy == "pair_cost_arb",
+            )
+            .count()
+        )
+        near_certain_count = (
+            session.query(Trade)
+            .filter(
+                Trade.close_reason == "resolution_near_certain",
+                Trade.closed_at >= today_start,
+            )
+            .count()
+        )
+        high_risk_count = (
+            session.query(Trade)
+            .filter(
+                Trade.resolution_flag == "high_risk_close",
+                Trade.is_paper.is_(True),
+            )
+            .count()
+        )
+        whale_count = (
+            session.query(WhaleActivity)
+            .filter(WhaleActivity.timestamp >= today_start - timedelta(hours=6))
+            .count()
+        )
+
+    typer.echo(
+        f"Today: {arb_count} arb opps found, "
+        f"{pair_cost_count} pair cost opps, "
+        f"{near_certain_count} near-certain exit(s), "
+        f"{high_risk_count} high-risk flagged, "
+        f"{whale_count} whale alert(s)"
+    )
 
 
 if __name__ == "__main__":
