@@ -32,6 +32,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e '.[dev]'
 
+      # ── Step 1: Restore DB ────────────────────────────────────────────────
       - name: Download previous DB artifact
         uses: dawidd6/action-download-artifact@v6
         with:
@@ -41,9 +42,26 @@ jobs:
           if_no_artifact_found: ignore
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Init DB
-        run: watchdog init-db || true
+      # dawidd6 extracts to ./watchdog-db/watchdog.db — move it to the root
+      # so SQLite opens the same file watchdog was writing to last run.
+      - name: Restore DB to workspace root
+        run: |
+          if [ -f watchdog-db/watchdog.db ]; then
+            mv watchdog-db/watchdog.db watchdog.db
+            echo "DB restored from artifact ($(du -h watchdog.db | cut -f1))"
+          else
+            echo "No previous DB found — starting fresh"
+          fi
 
+      # ── Step 2: Init DB (create missing tables, run migrations) ──────────
+      - name: Init DB
+        run: watchdog init-db
+
+      # ── Step 3: Confirm DB loaded before any strategy runs ───────────────
+      - name: Debug — verify DB trade count
+        run: watchdog analyze-paper-trades 2>&1 | head -5 || true
+
+      # ── Step 4: Strategy steps ────────────────────────────────────────────
       - name: Run Polymarket paper trading
         run: watchdog run-paper-trading --platform polymarket --iterations 5 --max-markets 300 || true
 
@@ -78,6 +96,7 @@ jobs:
         if: always()
         run: watchdog send-daily-telegram || true
 
+      # ── Step 5: Persist DB ────────────────────────────────────────────────
       - name: Upload DB artifact
         if: always()
         uses: actions/upload-artifact@v4
