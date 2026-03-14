@@ -1003,5 +1003,156 @@ def send_daily_telegram_command() -> None:
     typer.echo(msg)
 
 
+@app.command("simulate-capital")
+def simulate_capital_command(
+    capital: Annotated[float, typer.Option(min=1.0, help="Starting capital in USD")] = 100.0,
+    strategy: Annotated[str, typer.Option(help="Filter by strategy name (optional)")] = "",
+) -> None:
+    """Replay closed paper trades through a capital-constrained backtest simulation."""
+    import csv
+    import math
+    from collections import defaultdict
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    from watchdog.db.models import Trade
+
+    KELLY_CAP = 0.20
+    MIN_POSITION = 1.0
+    EXCLUDED_STRATEGIES = {"intra_event_arb"}
+
+    settings = get_settings()
+    engine = build_engine(settings)
+    session_factory = build_session_factory(engine)
+
+    with session_factory() as session:
+        q = (
+            select(Trade)
+            .where(
+                Trade.status == "closed",
+                Trade.exit_price.is_not(None),
+                Trade.entry_price.is_not(None),
+            )
+            .order_by(Trade.opened_at.asc())
+        )
+        if strategy:
+            q = q.where(Trade.strategy == strategy)
+        else:
+            q = q.where(
+                ~Trade.strategy.in_(list(EXCLUDED_STRATEGIES))
+            )
+        trades = session.execute(q).scalars().all()
+
+    if not trades:
+        typer.echo("No closed trades found.")
+        raise typer.Exit()
+
+    balance = capital
+    peak = capital
+    max_dd = 0.0
+    trades_taken = 0
+    trades_skipped = 0
+    equity_curve = [capital]
+    monthly_start: dict[str, float] = {}
+    monthly_end: dict[str, float] = {}
+    pnl_list: list[float] = []
+    trade_log: list[dict] = []
+
+    for trade in trades:
+        kelly = min(trade.kelly_fraction or 0.10, KELLY_CAP)
+        position_size = balance * kelly
+
+        if position_size < MIN_POSITION:
+            trades_skipped += 1
+            continue
+
+        entry = trade.entry_price
+        exit_ = trade.exit_price
+        pnl = position_size * (exit_ - entry) / entry
+
+        prev_balance = balance
+        balance = max(0.0, balance + pnl)
+        trades_taken += 1
+        pnl_list.append(pnl)
+        equity_curve.append(balance)
+
+        if balance > peak:
+            peak = balance
+        dd = (peak - balance) / peak if peak > 0 else 0.0
+        if dd > max_dd:
+            max_dd = dd
+
+        ts = trade.closed_at or trade.opened_at or datetime.now(UTC)
+        month_key = ts.strftime("%b %Y")
+        if month_key not in monthly_start:
+            monthly_start[month_key] = prev_balance
+        monthly_end[month_key] = balance
+
+        trade_log.append({
+            "trade_id": trade.id,
+            "date": ts.strftime("%Y-%m-%d"),
+            "strategy": trade.strategy or "calibration",
+            "position_size": round(position_size, 4),
+            "pnl": round(pnl, 4),
+            "running_balance": round(balance, 4),
+        })
+
+    total_return = (balance - capital) / capital * 100 if capital > 0 else 0.0
+    avg_pnl = sum(pnl_list) / len(pnl_list) if pnl_list else 0.0
+    avg_pos = sum(r["position_size"] for r in trade_log) / len(trade_log) if trade_log else 0.0
+
+    neg_pnl = [p for p in pnl_list if p < 0]
+    if len(neg_pnl) > 1:
+        import statistics
+        d_std = statistics.stdev(neg_pnl)
+    elif len(neg_pnl) == 1:
+        d_std = abs(neg_pnl[0])
+    else:
+        d_std = 1e-9
+    sortino = (avg_pnl / d_std * math.sqrt(252)) if d_std > 0 else 0.0
+
+    typer.echo("")
+    typer.echo(f"Capital Simulation — Starting balance: ${capital:.2f}")
+    typer.echo("=" * 48)
+    typer.echo(f"Trades replayed:     {trades_taken}")
+    typer.echo(f"Trades skipped:      {trades_skipped}")
+    typer.echo(f"Final balance:       ${balance:.2f}")
+    typer.echo(f"Total return:        {total_return:+.1f}%")
+    typer.echo(f"Peak balance:        ${peak:.2f}")
+    typer.echo(f"Max drawdown:        -{max_dd * 100:.1f}%")
+    typer.echo(f"Sortino (live):      {sortino:.2f}")
+    typer.echo(f"Avg position size:   ${avg_pos:.2f}")
+    typer.echo(f"Avg trade PnL:       ${avg_pnl:.2f}")
+    typer.echo("")
+    typer.echo("Equity curve (by month):")
+
+    sorted_months = sorted(monthly_start.keys(), key=lambda m: datetime.strptime(m, "%b %Y"))
+    for month in sorted_months:
+        m_start = monthly_start[month]
+        m_end = monthly_end[month]
+        m_ret = (m_end - m_start) / m_start * 100 if m_start > 0 else 0.0
+        sign = "+" if m_ret >= 0 else ""
+        typer.echo(f"  {month}:  ${m_start:.2f} → ${m_end:.2f}  ({sign}{m_ret:.0f}%)")
+
+    typer.echo("")
+
+    reports_dir = Path("reports")
+    reports_dir.mkdir(exist_ok=True)
+    today_str = datetime.now(UTC).strftime("%Y%m%d")
+    capital_str = str(int(capital))
+    csv_path = reports_dir / f"simulation_{capital_str}_{today_str}.csv"
+
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["trade_id", "date", "strategy", "position_size", "pnl", "running_balance"],
+        )
+        writer.writeheader()
+        writer.writerows(trade_log)
+
+    typer.echo(f"CSV saved to {csv_path}")
+
+
 if __name__ == "__main__":
     app()
