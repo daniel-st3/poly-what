@@ -2,13 +2,24 @@ name: Daily Run
 
 on:
   schedule:
-    - cron: '0 11 * * *'    # 6am Colombia (UTC-5)
-    - cron: '0 19 * * *'    # 2pm Colombia (UTC-5)
+    - cron: '0 11 * * *'   # 6am Colombia (UTC-5)
+    - cron: '0 14 * * *'   # 9am Colombia (UTC-5)
+    - cron: '0 17 * * *'   # 12pm Colombia (UTC-5)
+    - cron: '0 21 * * *'   # 4pm Colombia (UTC-5)
   workflow_dispatch:
+
+env:
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  MANIFOLD_API_KEY: ${{ secrets.MANIFOLD_API_KEY }}
+  MANIFOLD_USER_ID: ${{ secrets.MANIFOLD_USER_ID }}
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -30,48 +41,42 @@ jobs:
           if_no_artifact_found: ignore
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Init DB (idempotent)
-        run: watchdog init-db
+      - name: Init DB
+        run: watchdog init-db || true
 
       - name: Run Polymarket paper trading
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: watchdog run-paper-trading --platform polymarket --iterations 5 --max-markets 300 || echo "⚠️ Polymarket run failed"
+        run: watchdog run-paper-trading --platform polymarket --iterations 5 --max-markets 300 || true
 
       - name: Run Manifold paper trading
-        env:
-          MANIFOLD_API_KEY: ${{ secrets.MANIFOLD_API_KEY }}
-          MANIFOLD_USER_ID: ${{ secrets.MANIFOLD_USER_ID }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: watchdog run-paper-trading --platform manifold --iterations 5 || echo "⚠️ Manifold run failed"
+        run: watchdog run-paper-trading --platform manifold --iterations 5 || true
 
-      - name: Run module scans
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          watchdog run-intra-event-arb    || echo "⚠️ ARB scan failed"
-          watchdog run-pair-cost-scan     || echo "⚠️ Pair cost scan failed"
-          watchdog run-resolution-check   || echo "⚠️ Resolution check failed"
-          watchdog run-whale-watch        || echo "⚠️ Whale watch failed"
-          watchdog run-ofi-scan           || echo "⚠️ OFI scan failed"
-          watchdog run-ensemble-scan      || echo "⚠️ Ensemble scan failed"
-          watchdog run-daily-summary      || echo "⚠️ Daily summary failed"
+      - name: Run intra-event ARB scan
+        run: watchdog run-intra-event-arb || true
+
+      - name: Run pair cost scan
+        run: watchdog run-pair-cost-scan || true
+
+      - name: Run resolution check
+        run: watchdog run-resolution-check || true
+
+      - name: Run whale watch
+        run: watchdog run-whale-watch || true
+
+      - name: Run OFI scan
+        run: watchdog run-ofi-scan || true
+
+      - name: Run ensemble scan
+        run: watchdog run-ensemble-scan || true
+
+      - name: Run daily summary
+        run: watchdog run-daily-summary || true
 
       - name: Analyze paper trades
-        run: watchdog analyze-paper-trades || echo "⚠️ Analysis failed"
+        run: watchdog analyze-paper-trades || true
 
       - name: Send Telegram summary
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          MANIFOLD_API_KEY: ${{ secrets.MANIFOLD_API_KEY }}
-          MANIFOLD_USER_ID: ${{ secrets.MANIFOLD_USER_ID }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: watchdog send-daily-telegram || echo "⚠️ Telegram send failed (non-fatal)"
+        if: always()
+        run: watchdog send-daily-telegram || true
 
       - name: Upload DB artifact
         if: always()
@@ -80,17 +85,3 @@ jobs:
           name: watchdog-db
           path: watchdog.db
           retention-days: 7
-
-      - name: Notify failure via Telegram
-        if: failure()
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python3 -c "
-          import os, httpx
-          t = os.getenv('TELEGRAM_BOT_TOKEN'); c = os.getenv('TELEGRAM_CHAT_ID')
-          if t and c:
-              httpx.post(f'https://api.telegram.org/bot{t}/sendMessage',
-                  json={'chat_id': c, 'text': '⚠️ poly-agent GitHub Actions run FAILED — check logs'}, timeout=10)
-          "
