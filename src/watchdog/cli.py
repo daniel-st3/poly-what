@@ -37,9 +37,19 @@ def _build_runtime() -> tuple[Settings, PolymarketCli]:
 
 @app.command("init-db")
 def init_db_command() -> None:
+    import os
+
     settings, _ = _build_runtime()
     engine = build_engine(settings)
     Base.metadata.create_all(engine)
+    # Print the resolved absolute DB path so CI logs show exactly which file is used.
+    db_url = str(engine.url)
+    if db_url.startswith("sqlite:///"):
+        rel = db_url[len("sqlite:///"):]
+        abs_path = os.path.abspath(rel) if rel and not rel.startswith("/") else rel or ":memory:"
+        typer.echo(f"DB path: {abs_path}  (url={db_url})")
+    else:
+        typer.echo(f"DB url: {db_url}")
     typer.echo("Initialized database schema")
 
 

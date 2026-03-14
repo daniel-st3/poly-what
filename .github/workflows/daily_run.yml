@@ -16,6 +16,9 @@ env:
   MANIFOLD_USER_ID: ${{ secrets.MANIFOLD_USER_ID }}
   TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
   TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+  # Pin DB to an absolute path so watchdog always reads/writes the same file
+  # regardless of CWD.  sqlite:/// + absolute path = four slashes total.
+  DATABASE_URL: sqlite:///${{ github.workspace }}/watchdog.db
 
 jobs:
   run-bot:
@@ -43,13 +46,13 @@ jobs:
           if_no_artifact_found: ignore
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # dawidd6 extracts to ./watchdog-db/watchdog.db — move it to the root
-      # so SQLite opens the same file watchdog was writing to last run.
+      # dawidd6 extracts to ./watchdog-db/watchdog.db — move it to the
+      # absolute workspace path that DATABASE_URL points at.
       - name: Restore DB to workspace root
         run: |
           if [ -f watchdog-db/watchdog.db ]; then
-            mv watchdog-db/watchdog.db watchdog.db
-            echo "DB restored from artifact ($(du -h watchdog.db | cut -f1))"
+            mv watchdog-db/watchdog.db "$GITHUB_WORKSPACE/watchdog.db"
+            echo "DB restored from artifact ($(du -h "$GITHUB_WORKSPACE/watchdog.db" | cut -f1))"
           else
             echo "No previous DB found — starting fresh"
           fi
@@ -58,9 +61,16 @@ jobs:
       - name: Init DB
         run: watchdog init-db
 
-      # ── Step 3: Confirm DB loaded before any strategy runs ───────────────
-      - name: Debug — verify DB trade count
-        run: watchdog analyze-paper-trades 2>&1 | head -5 || true
+      # ── Step 3: Confirm exact DB path and trade count ─────────────────────
+      - name: Debug — verify DB path and trade count
+        run: |
+          python -c "
+          from watchdog.core.config import get_settings
+          from watchdog.db.session import build_engine
+          engine = build_engine(get_settings())
+          print('ENGINE URL:', engine.url)
+          "
+          watchdog analyze-paper-trades 2>&1 | head -5 || true
 
       # ── Step 4: Strategy steps ────────────────────────────────────────────
       - name: Run Polymarket paper trading
@@ -103,7 +113,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: watchdog-db
-          path: watchdog.db
+          path: ${{ github.workspace }}/watchdog.db
           retention-days: 7
           overwrite: true
 
@@ -136,18 +146,21 @@ jobs:
       - name: Restore DB to workspace root
         run: |
           if [ -f watchdog-db/watchdog.db ]; then
-            mv watchdog-db/watchdog.db watchdog.db
-            echo "DB restored ($(du -h watchdog.db | cut -f1))"
+            mv watchdog-db/watchdog.db "$GITHUB_WORKSPACE/watchdog.db"
+            echo "DB restored ($(du -h "$GITHUB_WORKSPACE/watchdog.db" | cut -f1))"
           else
             echo "No previous DB — weekly summary will show zeros"
           fi
 
       - name: Init DB
         run: watchdog init-db
+        env:
+          DATABASE_URL: sqlite:///${{ github.workspace }}/watchdog.db
 
       - name: Send weekly Telegram summary
         run: watchdog send-weekly-telegram
         env:
+          DATABASE_URL: sqlite:///${{ github.workspace }}/watchdog.db
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MANIFOLD_API_KEY: ${{ secrets.MANIFOLD_API_KEY }}
