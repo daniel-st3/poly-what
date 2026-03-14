@@ -248,3 +248,17 @@ class SmartWallet(Base):
     volume: Mapped[float] = mapped_column(Float)
     rank: Mapped[int] = mapped_column(Integer)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class PortfolioSnapshot(Base):
+    __tablename__ = "portfolio_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    starting_capital: Mapped[float] = mapped_column(Float, index=True)
+    current_balance: Mapped[float] = mapped_column(Float)
+    peak_balance: Mapped[float] = mapped_column(Float)
+    run_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    total_return_pct: Mapped[float] = mapped_column(Float)
+    drawdown_pct: Mapped[float] = mapped_column(Float)
+    trades_today: Mapped[int] = mapped_column(Integer, default=0)

@@ -910,6 +910,7 @@ def send_daily_telegram_command() -> None:
     """Send formatted daily summary to Telegram."""
     from datetime import UTC, datetime
 
+    from watchdog.backtest.portfolio import count_runs_today, update_portfolios
     from watchdog.db.init import init_db
     from watchdog.db.models import ArbOpportunity, EnsembleSignal, OFISignal, Trade, WhaleActivity
     from watchdog.notifications.telegram import send_telegram
@@ -989,6 +990,37 @@ def send_daily_telegram_command() -> None:
             if (t.strategy or "") not in _arb_strats
         )
 
+        # Portfolio tracker — update both portfolios and get current state
+        portfolios = update_portfolios(session)
+        run_n = count_runs_today(session)
+
+    def _pnl_str(pnl: float) -> str:
+        if pnl == 0.0:
+            return "$0.00 (no closed positions)"
+        sign = "+" if pnl >= 0 else ""
+        return f"{sign}${pnl:.2f}"
+
+    p100 = portfolios.get(100.0)
+    p500 = portfolios.get(500.0)
+
+    portfolio_block = (
+        "\n💼 PORTFOLIO TRACKER\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        f"💵 $100 Portfolio\n"
+        f"   Balance:      ${p100.current_balance:,.2f}\n"
+        f"   This run:     {_pnl_str(p100.run_pnl)}\n"
+        f"   Total return: {p100.total_return_pct:+.1f}%\n"
+        f"   Drawdown:     -{p100.drawdown_pct:.1f}% from peak\n"
+        f"\n"
+        f"💵 $500 Portfolio\n"
+        f"   Balance:      ${p500.current_balance:,.2f}\n"
+        f"   This run:     {_pnl_str(p500.run_pnl)}\n"
+        f"   Total return: {p500.total_return_pct:+.1f}%\n"
+        f"   Drawdown:     -{p500.drawdown_pct:.1f}% from peak\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📅 Run {run_n} of 4 today"
+    ) if p100 and p500 else ""
+
     msg = (
         f"🤖 poly-agent run complete — {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}\n"
         f"📊 ARB: {arb_count} opps, est ${daily_est_cents / 100:.2f}\n"
@@ -997,10 +1029,57 @@ def send_daily_telegram_command() -> None:
         f"🐋 WHALES: {whale_signals} smart money signals\n"
         f"⏰ RESOLUTION: {resolution_flagged} flagged\n"
         f"💰 Net realized PnL: ${net_pnl:.2f}"
+        f"{portfolio_block}"
     )
 
     send_telegram(msg, settings.telegram_bot_token, settings.telegram_chat_id)
     typer.echo(msg)
+
+
+@app.command("portfolio-status")
+def portfolio_status_command() -> None:
+    """Print the current state of the $100 and $500 simulated portfolios."""
+    from datetime import UTC, datetime
+
+    from watchdog.backtest.portfolio import STARTING_CAPITALS, get_current_portfolios, seed_portfolios
+    from watchdog.db.init import init_db
+
+    settings = get_settings()
+    engine = build_engine(settings)
+    init_db(engine)
+    session_factory = build_session_factory(engine)
+
+    with session_factory() as session:
+        portfolios = get_current_portfolios(session)
+
+        # Auto-seed if either portfolio has no snapshot yet
+        needs_seed = any(portfolios.get(cap) is None for cap in STARTING_CAPITALS)
+        if needs_seed:
+            typer.echo("No portfolio snapshots found — seeding from historical trades...")
+            portfolios = seed_portfolios(session)
+            typer.echo("Seeding complete.")
+            typer.echo("")
+
+    typer.echo("Portfolio Status")
+    typer.echo("=" * 40)
+    for cap in STARTING_CAPITALS:
+        p = portfolios.get(cap)
+        if p is None:
+            typer.echo(f"  ${cap:.0f} portfolio: no data")
+            continue
+        run_str = (
+            f"+${p.run_pnl:.2f}" if p.run_pnl > 0
+            else f"-${abs(p.run_pnl):.2f}" if p.run_pnl < 0
+            else "$0.00 (no closed positions)"
+        )
+        typer.echo(f"  ${cap:.0f} Portfolio")
+        typer.echo(f"    Balance:      ${p.current_balance:,.2f}")
+        typer.echo(f"    Peak:         ${p.peak_balance:,.2f}")
+        typer.echo(f"    Last run PnL: {run_str}")
+        typer.echo(f"    Total return: {p.total_return_pct:+.1f}%")
+        typer.echo(f"    Drawdown:     -{p.drawdown_pct:.1f}% from peak")
+        typer.echo(f"    Last updated: {p.timestamp.strftime('%Y-%m-%d %H:%M UTC')}")
+        typer.echo("")
 
 
 @app.command("simulate-capital")
