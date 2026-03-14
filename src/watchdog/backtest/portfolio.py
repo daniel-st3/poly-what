@@ -171,7 +171,7 @@ def update_portfolios(session: Session, run_window_hours: int = 6) -> dict[float
 
         # All trades since last snapshot
         new_trades = _fetch_closed_trades(session, after=latest.timestamp)
-        balance, peak, new_pnl, _ = _apply_trades(
+        balance, peak, _new_pnl, _ = _apply_trades(
             new_trades, latest.current_balance, latest.peak_balance
         )
 

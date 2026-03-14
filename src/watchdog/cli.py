@@ -1039,9 +1039,11 @@ def send_daily_telegram_command() -> None:
 @app.command("portfolio-status")
 def portfolio_status_command() -> None:
     """Print the current state of the $100 and $500 simulated portfolios."""
-    from datetime import UTC, datetime
-
-    from watchdog.backtest.portfolio import STARTING_CAPITALS, get_current_portfolios, seed_portfolios
+    from watchdog.backtest.portfolio import (
+        STARTING_CAPITALS,
+        get_current_portfolios,
+        seed_portfolios,
+    )
     from watchdog.db.init import init_db
 
     settings = get_settings()
@@ -1090,16 +1092,15 @@ def simulate_capital_command(
     """Replay closed paper trades through a capital-constrained backtest simulation."""
     import csv
     import math
-    from collections import defaultdict
     from datetime import UTC, datetime
 
     from sqlalchemy import select
 
     from watchdog.db.models import Trade
 
-    KELLY_CAP = 0.20
-    MIN_POSITION = 1.0
-    EXCLUDED_STRATEGIES = {"intra_event_arb"}
+    kelly_cap = 0.20
+    min_position = 1.0
+    excluded_strategies = {"intra_event_arb"}
 
     settings = get_settings()
     engine = build_engine(settings)
@@ -1119,7 +1120,7 @@ def simulate_capital_command(
             q = q.where(Trade.strategy == strategy)
         else:
             q = q.where(
-                ~Trade.strategy.in_(list(EXCLUDED_STRATEGIES))
+                ~Trade.strategy.in_(list(excluded_strategies))
             )
         trades = session.execute(q).scalars().all()
 
@@ -1139,10 +1140,10 @@ def simulate_capital_command(
     trade_log: list[dict] = []
 
     for trade in trades:
-        kelly = min(trade.kelly_fraction or 0.10, KELLY_CAP)
+        kelly = min(trade.kelly_fraction or 0.10, kelly_cap)
         position_size = balance * kelly
 
-        if position_size < MIN_POSITION:
+        if position_size < min_position:
             trades_skipped += 1
             continue
 
