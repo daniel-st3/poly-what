@@ -887,7 +887,7 @@ def run_ensemble_scan_command() -> None:
 
 @app.command("test-telegram")
 def test_telegram_command() -> None:
-    """Send a test Telegram message to verify setup."""
+    """Send a daily and weekly sample Telegram message to verify setup."""
     from watchdog.notifications.telegram import send_telegram
 
     settings = get_settings()
@@ -902,7 +902,32 @@ def test_telegram_command() -> None:
         settings.telegram_bot_token,
         settings.telegram_chat_id,
     )
-    typer.echo("✅ Telegram test message sent")
+    typer.echo("✅ Daily test message sent")
+
+    weekly_sample = (
+        "📅 WEEKLY SUMMARY — week of Mar 10-16\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📊 Trades closed:     12\n"
+        "🏆 Best trade:        +$3.47 (calibration)\n"
+        "💀 Worst trade:       -$1.22 (calibration)\n"
+        "✅ Win rate:          67%\n"
+        "\n"
+        "💼 Portfolio performance\n"
+        "   $100 → $104.18  (+4.2% this week)\n"
+        "   $500 → $520.90  (+4.2% this week)\n"
+        "\n"
+        "🔍 Signal activity\n"
+        "   ARB: avg 3 opps/run, est $0.42/run\n"
+        "   OFI: 5 bullish, 2 bearish signals\n"
+        "   ENSEMBLE: 4 divergences\n"
+        "   WHALES: 1 smart money moves\n"
+        "\n"
+        "📈 Outlook: 8 open positions tracking\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "[SAMPLE — not real data]"
+    )
+    send_telegram(weekly_sample, settings.telegram_bot_token, settings.telegram_chat_id)
+    typer.echo("✅ Weekly sample message sent")
 
 
 @app.command("send-daily-telegram")
@@ -1232,6 +1257,176 @@ def simulate_capital_command(
         writer.writerows(trade_log)
 
     typer.echo(f"CSV saved to {csv_path}")
+
+
+@app.command("send-weekly-telegram")
+def send_weekly_telegram_command() -> None:
+    """Send a weekly performance summary to Telegram (fires every Sunday)."""
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import select
+
+    from watchdog.backtest.portfolio import STARTING_CAPITALS
+    from watchdog.db.init import init_db
+    from watchdog.db.models import (
+        ArbOpportunity,
+        EnsembleSignal,
+        OFISignal,
+        PortfolioSnapshot,
+        Trade,
+        WhaleActivity,
+    )
+    from watchdog.notifications.telegram import send_telegram
+
+    settings = get_settings()
+    configure_logging(settings)
+    engine = build_engine(settings)
+    init_db(engine)
+    session_factory = build_session_factory(engine)
+
+    now = datetime.now(UTC)
+    week_start = now - timedelta(days=7)
+
+    # Header dates — "Mar 10-16" or "Mar 29 - Apr 4"
+    if week_start.month == now.month:
+        date_range = f"{week_start.strftime('%b')} {week_start.day}-{now.day}"
+    else:
+        date_range = f"{week_start.strftime('%b')} {week_start.day} - {now.strftime('%b')} {now.day}"
+
+    with session_factory() as session:
+        # ── Trades closed this week ───────────────────────────────────────
+        closed_week = (
+            session.query(Trade)
+            .filter(
+                Trade.status == "closed",
+                Trade.is_paper.is_(True),
+                Trade.closed_at >= week_start,
+            )
+            .all()
+        )
+        total_closed = len(closed_week)
+        wins = sum(1 for t in closed_week if (t.pnl or 0.0) > 0)
+        win_rate = round(wins / total_closed * 100) if total_closed > 0 else 0
+
+        best = max(closed_week, key=lambda t: t.pnl or 0.0, default=None)
+        worst = min(closed_week, key=lambda t: t.pnl or 0.0, default=None)
+
+        def _trade_str(t: Trade | None, sign: str) -> str:
+            if t is None:
+                return f"{sign}$0.00 (—)"
+            pnl = t.pnl or 0.0
+            strat = t.strategy or "calibration"
+            return f"{'+' if pnl >= 0 else ''}${pnl:.2f} ({strat})"
+
+        # ── Portfolio balances: 7-days-ago vs now ─────────────────────────
+        port_lines: list[str] = []
+        for cap in STARTING_CAPITALS:
+            latest = session.execute(
+                select(PortfolioSnapshot)
+                .where(PortfolioSnapshot.starting_capital == cap)
+                .order_by(PortfolioSnapshot.timestamp.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+
+            oldest_this_week = session.execute(
+                select(PortfolioSnapshot)
+                .where(
+                    PortfolioSnapshot.starting_capital == cap,
+                    PortfolioSnapshot.timestamp >= week_start,
+                )
+                .order_by(PortfolioSnapshot.timestamp.asc())
+                .limit(1)
+            ).scalar_one_or_none()
+
+            now_bal = latest.current_balance if latest else cap
+            then_bal = oldest_this_week.current_balance if oldest_this_week else cap
+            week_chg = (now_bal - then_bal) / then_bal * 100 if then_bal > 0 else 0.0
+            sign = "+" if week_chg >= 0 else ""
+            port_lines.append(
+                f"   ${cap:.0f} → ${now_bal:,.2f}  ({sign}{week_chg:.1f}% this week)"
+            )
+
+        # ── Run count this week (each run saves a PortfolioSnapshot) ──────
+        run_count = (
+            session.query(PortfolioSnapshot)
+            .filter(
+                PortfolioSnapshot.starting_capital == 100.0,
+                PortfolioSnapshot.timestamp >= week_start,
+            )
+            .count()
+        ) or 1  # avoid div-by-zero if DB just seeded
+
+        # ── ARB signals ───────────────────────────────────────────────────
+        arb_rows = (
+            session.query(ArbOpportunity)
+            .filter(ArbOpportunity.timestamp >= week_start)
+            .all()
+        )
+        arb_total = len(arb_rows)
+        arb_value_usd = sum((r.profit_cents or 0.0) for r in arb_rows) / 100
+        arb_per_run = arb_total / run_count
+        arb_val_per_run = arb_value_usd / run_count
+
+        # ── OFI signals ───────────────────────────────────────────────────
+        ofi_bullish = (
+            session.query(OFISignal)
+            .filter(OFISignal.scanned_at >= week_start, OFISignal.signal == "OFI_BULLISH")
+            .count()
+        ) or 0
+        ofi_bearish = (
+            session.query(OFISignal)
+            .filter(OFISignal.scanned_at >= week_start, OFISignal.signal == "OFI_BEARISH")
+            .count()
+        ) or 0
+
+        # ── Ensemble divergences ──────────────────────────────────────────
+        ens_divs = (
+            session.query(EnsembleSignal)
+            .filter(EnsembleSignal.scanned_at >= week_start, EnsembleSignal.divergence > 0.05)
+            .count()
+        ) or 0
+
+        # ── Whale smart money moves ───────────────────────────────────────
+        whale_moves = (
+            session.query(WhaleActivity)
+            .filter(
+                WhaleActivity.timestamp >= week_start,
+                WhaleActivity.whale_signal == "smart_money_present",
+            )
+            .count()
+        ) or 0
+
+        # ── Open positions ────────────────────────────────────────────────
+        open_positions = (
+            session.query(Trade)
+            .filter(Trade.status == "open", Trade.is_paper.is_(True))
+            .count()
+        ) or 0
+
+    divider = "━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    msg = (
+        f"📅 WEEKLY SUMMARY — week of {date_range}\n"
+        f"{divider}\n"
+        f"📊 Trades closed:     {total_closed}\n"
+        f"🏆 Best trade:        {_trade_str(best, '+')}\n"
+        f"💀 Worst trade:       {_trade_str(worst, '-')}\n"
+        f"✅ Win rate:          {win_rate}%\n"
+        f"\n"
+        f"💼 Portfolio performance\n"
+        f"{chr(10).join(port_lines)}\n"
+        f"\n"
+        f"🔍 Signal activity\n"
+        f"   ARB: avg {arb_per_run:.0f} opps/run, est ${arb_val_per_run:.2f}/run\n"
+        f"   OFI: {ofi_bullish} bullish, {ofi_bearish} bearish signals\n"
+        f"   ENSEMBLE: {ens_divs} divergences\n"
+        f"   WHALES: {whale_moves} smart money moves\n"
+        f"\n"
+        f"📈 Outlook: {open_positions} open positions tracking\n"
+        f"{divider}"
+    )
+
+    send_telegram(msg, settings.telegram_bot_token, settings.telegram_chat_id)
+    typer.echo(msg)
 
 
 if __name__ == "__main__":

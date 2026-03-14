@@ -2,10 +2,11 @@ name: Daily Run
 
 on:
   schedule:
-    - cron: '0 11 * * *'   # 6am Colombia (UTC-5)
-    - cron: '0 14 * * *'   # 9am Colombia (UTC-5)
-    - cron: '0 17 * * *'   # 12pm Colombia (UTC-5)
-    - cron: '0 21 * * *'   # 4pm Colombia (UTC-5)
+    - cron: '0 11 * * *'   # 6am Colombia (UTC-5) — daily
+    - cron: '0 14 * * *'   # 9am Colombia (UTC-5) — daily
+    - cron: '0 17 * * *'   # 12pm Colombia (UTC-5) — daily
+    - cron: '0 21 * * *'   # 4pm Colombia (UTC-5) — daily
+    - cron: '0 17 * * 0'   # Sunday 12pm Colombia (UTC-5) — weekly summary
   workflow_dispatch:
 
 env:
@@ -104,3 +105,49 @@ jobs:
           name: watchdog-db
           path: watchdog.db
           retention-days: 7
+
+  # ── Weekly summary — fires only on Sundays at 17:00 UTC (12pm Colombia) ──
+  weekly-summary:
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 17 * * 0' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Download previous DB artifact
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: daily_run.yml
+          name: watchdog-db
+          path: .
+          if_no_artifact_found: ignore
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restore DB to workspace root
+        run: |
+          if [ -f watchdog-db/watchdog.db ]; then
+            mv watchdog-db/watchdog.db watchdog.db
+            echo "DB restored ($(du -h watchdog.db | cut -f1))"
+          else
+            echo "No previous DB — weekly summary will show zeros"
+          fi
+
+      - name: Init DB
+        run: watchdog init-db
+
+      - name: Send weekly Telegram summary
+        run: watchdog send-weekly-telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MANIFOLD_API_KEY: ${{ secrets.MANIFOLD_API_KEY }}
+          MANIFOLD_USER_ID: ${{ secrets.MANIFOLD_USER_ID }}
