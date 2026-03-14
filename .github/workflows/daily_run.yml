@@ -105,11 +105,12 @@ jobs:
           name: watchdog-db
           path: watchdog.db
           retention-days: 7
+          overwrite: true
 
   # ── Weekly summary — fires only on Sundays at 17:00 UTC (12pm Colombia) ──
   weekly-summary:
     runs-on: ubuntu-latest
-    if: github.event.schedule == '0 17 * * 0' || github.event_name == 'workflow_dispatch'
+    if: github.event.schedule == '0 17 * * 0'
 
     steps:
       - uses: actions/checkout@v4
