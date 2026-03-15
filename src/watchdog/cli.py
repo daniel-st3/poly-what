@@ -53,6 +53,46 @@ def init_db_command() -> None:
     typer.echo("Initialized database schema")
 
 
+@app.command("restore-baseline")
+def restore_baseline_command() -> None:
+    """Seed DB from db/seed_data.sql if fewer than 100 trades exist (idempotent)."""
+    import os
+
+    settings = get_settings()
+    engine = build_engine(settings)
+    session_factory = build_session_factory(engine)
+
+    with session_factory() as session:
+        trade_count = session.execute(text("SELECT COUNT(*) FROM trades")).scalar_one()
+
+    if trade_count >= 100:
+        typer.echo(f"restore-baseline: skipped — DB already has {trade_count} trades")
+        return
+
+    # Locate seed file relative to this file's package root, then fall back to CWD.
+    _here = Path(__file__).parent
+    candidates = [
+        _here.parent.parent / "db" / "seed_data.sql",  # src/../db/seed_data.sql (editable install)
+        Path(os.getcwd()) / "db" / "seed_data.sql",
+    ]
+    seed_path = next((p for p in candidates if p.exists()), None)
+    if seed_path is None:
+        typer.echo("restore-baseline: seed file not found — checked: " + ", ".join(str(p) for p in candidates), err=True)
+        raise typer.Exit(code=1)
+
+    sql = seed_path.read_text()
+    with engine.begin() as conn:
+        for stmt in sql.split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                conn.execute(text(stmt))
+
+    with session_factory() as session:
+        new_count = session.execute(text("SELECT COUNT(*) FROM trades")).scalar_one()
+
+    typer.echo(f"restore-baseline: seeded from {seed_path} — {trade_count} → {new_count} trades")
+
+
 @app.command("healthcheck")
 def healthcheck_command(
     mode: Annotated[str, typer.Option(help="Select check mode")] = "paper"

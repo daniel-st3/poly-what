@@ -59,6 +59,10 @@ jobs:
       - name: Init DB
         run: watchdog init-db
 
+      # ── Step 2b: Restore baseline if artifact was missing ─────────────────
+      - name: Restore baseline
+        run: watchdog restore-baseline
+
       # ── Step 3: Confirm exact DB path and trade count ─────────────────────
       - name: Debug — verify DB path and trade count
         run: |
