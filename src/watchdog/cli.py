@@ -57,9 +57,9 @@ def init_db_command() -> None:
 def restore_baseline_command() -> None:
     """Seed trades from db/seed_data.sql and write authoritative portfolio baseline.
 
-    Runs only when the DB has fewer than 100 trades (fresh DB or corrupted artifact).
-    Portfolio snapshots are always written unconditionally so a botched $100 snapshot
-    from a previous run can never survive into this run.
+    Trade seeding: runs only when DB has fewer than 100 trades.
+    Portfolio snapshots: always written when all existing snapshots are botched
+    (current_balance == starting_capital). Skipped when valid PnL data exists.
     """
     import os
     from datetime import datetime
@@ -72,48 +72,67 @@ def restore_baseline_command() -> None:
 
     with session_factory() as session:
         trade_count = session.execute(text("SELECT COUNT(*) FROM trades")).scalar_one()
+        snap_count_before = session.execute(text("SELECT COUNT(*) FROM portfolio_snapshots")).scalar_one()
+        # Botched = all existing snapshots have current_balance == starting_capital
+        good_snap_count = session.execute(text(
+            "SELECT COUNT(*) FROM portfolio_snapshots WHERE current_balance != starting_capital"
+        )).scalar_one()
 
+    typer.echo(
+        f"restore-baseline: found {trade_count} trades, "
+        f"{snap_count_before} snapshots ({good_snap_count} with real PnL)"
+    )
+
+    # ── Step 1: Seed trades — only when DB is nearly empty ──────────────────────────────
     if trade_count >= 100:
-        typer.echo(f"restore-baseline: skipped — DB already has {trade_count} trades")
+        typer.echo(f"restore-baseline: trade seeding skipped — DB already has {trade_count} trades")
+    else:
+        _here = Path(__file__).parent
+        candidates = [
+            Path(os.environ.get("GITHUB_WORKSPACE", "")) / "db" / "seed_data.sql",  # CI
+            _here.parent.parent / "db" / "seed_data.sql",   # editable local install
+            Path(os.getcwd()) / "db" / "seed_data.sql",     # fallback
+            Path("/home/runner/work/poly-what/poly-what/db/seed_data.sql"),  # hardcoded runner
+        ]
+        seed_path = next((p for p in candidates if p.exists()), None)
+        if seed_path is None:
+            typer.echo("restore-baseline: seed file not found — checked: " + ", ".join(str(p) for p in candidates), err=True)
+            raise typer.Exit(code=1)
+
+        sql = seed_path.read_text()
+        # Skip DDL control statements — SQLAlchemy's engine.begin() owns the transaction.
+        _skip_prefixes = ("begin", "commit", "rollback", "pragma")
+        with engine.begin() as conn:
+            for stmt in sql.split(";"):
+                stmt = stmt.strip()
+                if stmt and not stmt.lower().lstrip("-\n ").startswith(_skip_prefixes):
+                    conn.execute(text(stmt))
+
+        with session_factory() as session:
+            new_count = session.execute(text("SELECT COUNT(*) FROM trades")).scalar_one()
+        typer.echo(f"restore-baseline: seeded trades {trade_count} → {new_count} from {seed_path}")
+
+    # ── Step 2: Authoritative portfolio baseline ─────────────────────────────────────────
+    # Always write if snapshots are missing or all botched (current_balance == starting_capital).
+    # Skip only if at least one snapshot has real PnL — those came from legitimate bot runs.
+    if good_snap_count > 0:
+        typer.echo(
+            f"restore-baseline: portfolio snapshots look valid "
+            f"({good_snap_count} with real PnL) — skipping baseline write"
+        )
         return
 
-    # ── Step 1: Seed trades from SQL (INSERT OR IGNORE — never overwrites newer data) ──
-    _here = Path(__file__).parent
-    candidates = [
-        Path(os.environ.get("GITHUB_WORKSPACE", "")) / "db" / "seed_data.sql",  # CI
-        _here.parent.parent / "db" / "seed_data.sql",   # editable local install
-        Path(os.getcwd()) / "db" / "seed_data.sql",     # fallback
-        Path("/home/runner/work/poly-what/poly-what/db/seed_data.sql"),  # hardcoded runner
-    ]
-    seed_path = next((p for p in candidates if p.exists()), None)
-    if seed_path is None:
-        typer.echo("restore-baseline: seed file not found — checked: " + ", ".join(str(p) for p in candidates), err=True)
-        raise typer.Exit(code=1)
-
-    sql = seed_path.read_text()
-    # Skip DDL control statements — SQLAlchemy's engine.begin() owns the transaction.
-    _skip_prefixes = ("begin", "commit", "rollback", "pragma")
-    with engine.begin() as conn:
-        for stmt in sql.split(";"):
-            stmt = stmt.strip()
-            if stmt and not stmt.lower().lstrip("-\n ").startswith(_skip_prefixes):
-                conn.execute(text(stmt))
-
-    with session_factory() as session:
-        new_count = session.execute(text("SELECT COUNT(*) FROM trades")).scalar_one()
-
-    typer.echo(f"restore-baseline: seeded trades {trade_count} → {new_count} from {seed_path}")
-
-    # ── Step 2: Authoritative portfolio baseline (DELETE all + INSERT correct values) ──
-    # Using Python objects (not SQL INSERT OR IGNORE) so ANY existing snapshot —
-    # including botched $100 ones with unknown IDs or newer timestamps — gets replaced.
     _baseline_ts = datetime(2026, 3, 14, 18, 20, 9, 289024)  # naive UTC, matches seed trades
     _baselines = [
         (100.0, 763.119499272194),
         (500.0, 3815.59749636097),
     ]
+    typer.echo(
+        f"restore-baseline: no valid snapshots found "
+        f"({snap_count_before} botched/empty) — writing authoritative baseline"
+    )
     with session_factory() as session:
-        session.execute(text("DELETE FROM portfolio_snapshots"))
+        deleted = session.execute(text("DELETE FROM portfolio_snapshots")).rowcount
         for cap, bal in _baselines:
             session.add(PortfolioSnapshot(
                 timestamp=_baseline_ts,
@@ -126,12 +145,11 @@ def restore_baseline_command() -> None:
                 trades_today=0,
             ))
         session.commit()
-        snap_count = session.execute(text("SELECT COUNT(*) FROM portfolio_snapshots")).scalar_one()
+        snap_count_after = session.execute(text("SELECT COUNT(*) FROM portfolio_snapshots")).scalar_one()
 
     typer.echo(
-        f"restore-baseline: portfolio baseline written — "
+        f"restore-baseline: deleted {deleted} old snapshots, wrote {snap_count_after} new — "
         + ", ".join(f"${cap:.0f}→${bal:,.2f}" for cap, bal in _baselines)
-        + f" ({snap_count} snapshots total)"
     )
 
 

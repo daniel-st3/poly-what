@@ -244,7 +244,7 @@ def get_current_portfolios(session: Session) -> dict[float, PortfolioState | Non
 
 def count_runs_today(session: Session) -> int:
     """Count how many update snapshots (non-seed) have been saved today for the $100 portfolio."""
-    today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     rows = session.execute(
         select(PortfolioSnapshot).where(
             PortfolioSnapshot.starting_capital == 100.0,
