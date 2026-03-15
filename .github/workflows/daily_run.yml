@@ -63,8 +63,8 @@ jobs:
       - name: Restore baseline
         run: watchdog restore-baseline
 
-      # ── Step 2c: Show portfolio state so CI log always has ground truth ───
-      - name: Portfolio status
+      # ── Step 2c: Show portfolio state immediately after baseline restore ────
+      - name: Portfolio status check
         run: watchdog portfolio-status
 
       # ── Step 3: Confirm exact DB path and trade count ─────────────────────
@@ -108,6 +108,9 @@ jobs:
 
       - name: Analyze paper trades
         run: watchdog analyze-paper-trades || true
+
+      - name: Portfolio status before Telegram
+        run: watchdog portfolio-status || true
 
       - name: Send Telegram summary
         if: always()
