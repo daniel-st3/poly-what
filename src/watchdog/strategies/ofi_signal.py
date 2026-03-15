@@ -21,10 +21,12 @@ Stores results in the ofi_signals table.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -36,6 +38,56 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 OFI_DEDUP_MINUTES = 60  # skip re-scan within this window
+OFI_TOP_N_MARKETS = 25  # how many top-volume markets to scan each run
+GAMMA_API = "https://gamma-api.polymarket.com"
+
+
+def _top_market_ids(session: Session, n: int = OFI_TOP_N_MARKETS) -> list[int]:
+    """Return up to n market IDs to scan, prioritising top 24h volume from gamma-api.
+
+    Falls back to any DB markets with yes_token_id if gamma-api is unreachable.
+    Open-trade markets are always included first.
+    """
+    # Always include markets with open trades
+    open_market_ids: list[int] = [
+        t.market_id
+        for t in session.query(Trade).filter(Trade.status == "open").all()
+    ]
+
+    # Fetch top markets from gamma-api by 24h CLOB volume
+    gamma_ids: list[int] = []
+    try:
+        resp = httpx.get(
+            f"{GAMMA_API}/markets",
+            params={"closed": "false", "limit": n, "order": "volume24hrClob", "ascending": "false"},
+            timeout=10.0,
+            verify=False,
+        )
+        if resp.status_code == 200:
+            for m in resp.json():
+                cid = m.get("conditionId") or ""
+                slug = m.get("slug") or ""
+                if not cid and not slug:
+                    continue
+                # Match to local DB by condition_id or slug
+                db_market = None
+                if cid:
+                    db_market = session.query(Market).filter(Market.condition_id == cid).first()
+                if db_market is None and slug:
+                    db_market = session.query(Market).filter(Market.slug == slug).first()
+                if db_market is not None and db_market.yes_token_id:
+                    gamma_ids.append(db_market.id)
+    except Exception as exc:
+        LOGGER.warning("OFI SCAN: gamma-api fetch failed — %s", exc)
+
+    # Merge: open-trade markets first, then gamma top markets, deduplicated
+    seen: set[int] = set()
+    result: list[int] = []
+    for mid in open_market_ids + gamma_ids:
+        if mid not in seen:
+            seen.add(mid)
+            result.append(mid)
+    return result[:n]
 
 
 class OFIScanner:
@@ -90,12 +142,10 @@ class OFIScanner:
         session: Session,
         rest_client: PolymarketRestClient,
     ) -> dict[str, Any]:
-        """Scan all open-trade markets. Persist OFISignal rows. Return summary."""
+        """Scan top active markets by volume. Persist OFISignal rows. Return summary."""
         print("\n📈 OFI SCAN")
 
-        # Collect markets with open paper trades
-        open_trades = session.query(Trade).filter(Trade.status == "open").all()
-        market_ids: set[int] = {t.market_id for t in open_trades}
+        market_ids = _top_market_ids(session)
 
         scanned = 0
         bullish = 0

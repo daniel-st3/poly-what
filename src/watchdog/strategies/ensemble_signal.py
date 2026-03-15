@@ -16,6 +16,7 @@ Stores results in the ensemble_signals table.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import time
 from datetime import UTC, datetime, timedelta
@@ -38,6 +39,52 @@ WORD_OVERLAP_MIN = 0.3
 REQUEST_TIMEOUT = 10.0
 FETCH_SLEEP_SECONDS = 0.5
 CACHE_HOURS = 24
+ENSEMBLE_TOP_N_MARKETS = 20  # how many top-volume markets to scan each run
+GAMMA_API = "https://gamma-api.polymarket.com"
+
+
+def _top_market_ids_ensemble(session: Session, n: int = ENSEMBLE_TOP_N_MARKETS) -> list[int]:
+    """Return up to n market IDs to scan, prioritising top 24h volume from gamma-api.
+
+    Falls back to any DB markets with a question set.
+    Open-trade markets are always included first.
+    """
+    open_market_ids: list[int] = [
+        t.market_id
+        for t in session.query(Trade).filter(Trade.status == "open").all()
+    ]
+
+    gamma_ids: list[int] = []
+    try:
+        resp = httpx.get(
+            f"{GAMMA_API}/markets",
+            params={"closed": "false", "limit": n, "order": "volume24hrClob", "ascending": "false"},
+            timeout=10.0,
+            verify=False,
+        )
+        if resp.status_code == 200:
+            for m in resp.json():
+                cid = m.get("conditionId") or ""
+                slug = m.get("slug") or ""
+                if not cid and not slug:
+                    continue
+                db_market = None
+                if cid:
+                    db_market = session.query(Market).filter(Market.condition_id == cid).first()
+                if db_market is None and slug:
+                    db_market = session.query(Market).filter(Market.slug == slug).first()
+                if db_market is not None and db_market.question:
+                    gamma_ids.append(db_market.id)
+    except Exception as exc:
+        LOGGER.warning("ENSEMBLE SCAN: gamma-api fetch failed — %s", exc)
+
+    seen: set[int] = set()
+    result: list[int] = []
+    for mid in open_market_ids + gamma_ids:
+        if mid not in seen:
+            seen.add(mid)
+            result.append(mid)
+    return result[:n]
 
 
 def _word_overlap(a: str, b: str) -> float:
@@ -155,11 +202,10 @@ class EnsembleScanner:
         session: Session,
         rest_client: PolymarketRestClient,
     ) -> dict[str, Any]:
-        """Scan open-trade markets. Fetch ensemble. Persist EnsembleSignal rows."""
+        """Scan top active markets by volume. Fetch ensemble. Persist EnsembleSignal rows."""
         print("\n🧠 ENSEMBLE SCAN")
 
-        open_trades = session.query(Trade).filter(Trade.status == "open").all()
-        market_ids: set[int] = {t.market_id for t in open_trades}
+        market_ids = _top_market_ids_ensemble(session)
 
         checked = 0
         divergences = 0
