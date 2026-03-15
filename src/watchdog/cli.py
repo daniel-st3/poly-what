@@ -69,11 +69,13 @@ def restore_baseline_command() -> None:
         typer.echo(f"restore-baseline: skipped — DB already has {trade_count} trades")
         return
 
-    # Locate seed file relative to this file's package root, then fall back to CWD.
+    # Locate seed file — CI path first, then editable-install and CWD fallbacks.
     _here = Path(__file__).parent
     candidates = [
-        _here.parent.parent / "db" / "seed_data.sql",  # src/../db/seed_data.sql (editable install)
-        Path(os.getcwd()) / "db" / "seed_data.sql",
+        Path(os.environ.get("GITHUB_WORKSPACE", "")) / "db" / "seed_data.sql",  # CI
+        _here.parent.parent / "db" / "seed_data.sql",   # editable local install
+        Path(os.getcwd()) / "db" / "seed_data.sql",     # fallback
+        Path("/home/runner/work/poly-what/poly-what/db/seed_data.sql"),  # hardcoded runner
     ]
     seed_path = next((p for p in candidates if p.exists()), None)
     if seed_path is None:
