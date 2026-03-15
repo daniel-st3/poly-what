@@ -83,10 +83,14 @@ def restore_baseline_command() -> None:
         raise typer.Exit(code=1)
 
     sql = seed_path.read_text()
+    # Strip DDL control statements — SQLAlchemy's engine.begin() owns the
+    # transaction; BEGIN/COMMIT/PRAGMA in the seed file conflict with it on
+    # some drivers (especially pysqlite on Linux) and can silently drop inserts.
+    _skip_prefixes = ("begin", "commit", "rollback", "pragma")
     with engine.begin() as conn:
         for stmt in sql.split(";"):
             stmt = stmt.strip()
-            if stmt:
+            if stmt and not stmt.lower().lstrip("-\n ").startswith(_skip_prefixes):
                 conn.execute(text(stmt))
 
     with session_factory() as session:

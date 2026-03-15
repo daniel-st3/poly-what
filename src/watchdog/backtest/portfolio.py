@@ -37,6 +37,8 @@ def _apply_trades(
     count = 0
 
     for trade in trades:
+        if trade.exit_price is None or trade.entry_price is None or trade.entry_price == 0:
+            continue
         kelly = min(trade.kelly_fraction or 0.10, KELLY_CAP)
         position_size = balance * kelly
         if position_size < MIN_POSITION:
@@ -61,7 +63,6 @@ def _fetch_closed_trades(
         select(Trade)
         .where(
             Trade.status == "closed",
-            Trade.exit_price.is_not(None),
             Trade.entry_price.is_not(None),
             ~Trade.strategy.in_(list(EXCLUDED_STRATEGIES)),
         )
@@ -84,20 +85,18 @@ def seed_portfolios(session: Session) -> dict[float, PortfolioState]:
     results: dict[float, PortfolioState] = {}
 
     for cap in STARTING_CAPITALS:
-        existing = session.execute(
+        latest = session.execute(
             select(PortfolioSnapshot)
             .where(PortfolioSnapshot.starting_capital == cap)
+            .order_by(PortfolioSnapshot.timestamp.desc())
             .limit(1)
         ).scalar_one_or_none()
 
-        if existing is not None:
-            # Already seeded — return current state instead
-            latest = session.execute(
-                select(PortfolioSnapshot)
-                .where(PortfolioSnapshot.starting_capital == cap)
-                .order_by(PortfolioSnapshot.timestamp.desc())
-                .limit(1)
-            ).scalar_one()
+        if latest is not None and latest.current_balance != cap:
+            # Latest snapshot has real data — return it directly.
+            # If current_balance == starting capital the snapshot is likely from a
+            # botched run (saved before any trades were replayed); fall through
+            # and recalculate from trades so we recover the correct balance.
             dd = (
                 (latest.peak_balance - latest.current_balance) / latest.peak_balance * 100
                 if latest.peak_balance > 0
