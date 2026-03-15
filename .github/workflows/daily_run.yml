@@ -63,6 +63,10 @@ jobs:
       - name: Restore baseline
         run: watchdog restore-baseline
 
+      # ── Step 2c: Show portfolio state so CI log always has ground truth ───
+      - name: Portfolio status
+        run: watchdog portfolio-status
+
       # ── Step 3: Confirm exact DB path and trade count ─────────────────────
       - name: Debug — verify DB path and trade count
         run: |

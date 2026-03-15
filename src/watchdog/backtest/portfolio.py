@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import NamedTuple
 
 from sqlalchemy import select
@@ -81,7 +81,7 @@ def seed_portfolios(session: Session) -> dict[float, PortfolioState]:
     Saves a seed snapshot (run_pnl=0, trades_today=0) so incremental updates know
     where to start. Safe to call multiple times — only seeds if no snapshot exists yet.
     """
-    now = datetime.now(UTC)
+    now = datetime.utcnow()  # naive UTC — must match how closed_at is stored in SQLite
     results: dict[float, PortfolioState] = {}
 
     for cap in STARTING_CAPITALS:
@@ -151,7 +151,7 @@ def update_portfolios(session: Session, run_window_hours: int = 6) -> dict[float
     Called after each bot run. The run_pnl field captures PnL from trades
     closed within the run_window_hours window for the Telegram display.
     """
-    now = datetime.now(UTC)
+    now = datetime.utcnow()  # naive UTC — must match how closed_at is stored in SQLite
     run_start = now - timedelta(hours=run_window_hours)
     results: dict[float, PortfolioState] = {}
 
