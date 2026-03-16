@@ -73,14 +73,9 @@ def restore_baseline_command() -> None:
     with session_factory() as session:
         trade_count = session.execute(text("SELECT COUNT(*) FROM trades")).scalar_one()
         snap_count_before = session.execute(text("SELECT COUNT(*) FROM portfolio_snapshots")).scalar_one()
-        # Botched = all existing snapshots have current_balance == starting_capital
-        good_snap_count = session.execute(text(
-            "SELECT COUNT(*) FROM portfolio_snapshots WHERE current_balance != starting_capital"
-        )).scalar_one()
 
     typer.echo(
-        f"restore-baseline: found {trade_count} trades, "
-        f"{snap_count_before} snapshots ({good_snap_count} with real PnL)"
+        f"restore-baseline: found {trade_count} trades, {snap_count_before} snapshots"
     )
 
     # ── Step 1: Seed trades — only when DB is nearly empty ──────────────────────────────
@@ -113,12 +108,22 @@ def restore_baseline_command() -> None:
         typer.echo(f"restore-baseline: seeded trades {trade_count} → {new_count} from {seed_path}")
 
     # ── Step 2: Authoritative portfolio baseline ─────────────────────────────────────────
-    # Always write if snapshots are missing or all botched (current_balance == starting_capital).
-    # Skip only if at least one snapshot has real PnL — those came from legitimate bot runs.
+    # Re-check AFTER seeding so the seed file's portfolio_snapshots are considered.
+    # (update-seed now includes current portfolio snapshots with INSERT OR REPLACE,
+    # so after seeding the DB will have valid snapshots if they were in the seed.)
+    with session_factory() as session:
+        good_snap_count = session.execute(text(
+            "SELECT COUNT(*) FROM portfolio_snapshots WHERE current_balance != starting_capital"
+        )).scalar_one()
+        snap_count_now = session.execute(text("SELECT COUNT(*) FROM portfolio_snapshots")).scalar_one()
+
+    typer.echo(f"restore-baseline: after seeding — {snap_count_now} snapshots, {good_snap_count} with real PnL")
+
+    # Skip only if at least one snapshot has real PnL (from seed or previous run)
     if good_snap_count > 0:
         typer.echo(
             f"restore-baseline: portfolio snapshots look valid "
-            f"({good_snap_count} with real PnL) — skipping baseline write"
+            f"({good_snap_count} with real PnL) — skipping hardcoded baseline write"
         )
         return
 
@@ -1092,12 +1097,12 @@ def send_daily_telegram_command() -> None:
             .count()
         ) or 0
 
-        # Whale smart money signals today
+        # Whale large position signals today
         whale_signals = (
             session.query(WhaleActivity)
             .filter(
                 WhaleActivity.timestamp >= today_start,
-                WhaleActivity.whale_signal == "smart_money_present",
+                WhaleActivity.whale_signal == "large_position",
             )
             .count()
         ) or 0
@@ -1394,7 +1399,8 @@ def send_weekly_telegram_command() -> None:
     init_db(engine)
     session_factory = build_session_factory(engine)
 
-    now = datetime.now(UTC)
+    # Use naive UTC for consistency with how closed_at is stored in SQLite
+    now = datetime.utcnow()
     week_start = now - timedelta(days=7)
 
     # Header dates — "Mar 10-16" or "Mar 29 - Apr 4"
@@ -1402,6 +1408,15 @@ def send_weekly_telegram_command() -> None:
         date_range = f"{week_start.strftime('%b')} {week_start.day}-{now.day}"
     else:
         date_range = f"{week_start.strftime('%b')} {week_start.day} - {now.strftime('%b')} {now.day}"
+
+    def _effective_pnl(t: Trade) -> float:
+        """Best available PnL: use stored field if non-zero, else compute from price delta."""
+        if t.pnl is not None and t.pnl != 0.0:
+            return float(t.pnl)
+        # Fallback: compute from exit/entry prices using stored size
+        if t.exit_price is not None and t.entry_price and t.entry_price != 0:
+            return float(t.size) * (float(t.exit_price) - float(t.entry_price))
+        return 0.0
 
     with session_factory() as session:
         # ── Trades closed this week ───────────────────────────────────────
@@ -1414,17 +1429,19 @@ def send_weekly_telegram_command() -> None:
             )
             .all()
         )
+        # Only count trades with exit_price for win rate (exclude NULL-exit forced closes)
+        scored = [t for t in closed_week if t.exit_price is not None]
         total_closed = len(closed_week)
-        wins = sum(1 for t in closed_week if (t.pnl or 0.0) > 0)
-        win_rate = round(wins / total_closed * 100) if total_closed > 0 else 0
+        wins = sum(1 for t in scored if _effective_pnl(t) > 0)
+        win_rate = round(wins / len(scored) * 100) if scored else 0
 
-        best = max(closed_week, key=lambda t: t.pnl or 0.0, default=None)
-        worst = min(closed_week, key=lambda t: t.pnl or 0.0, default=None)
+        best = max(scored, key=_effective_pnl, default=None)
+        worst = min(scored, key=_effective_pnl, default=None)
 
         def _trade_str(t: Trade | None, sign: str) -> str:
             if t is None:
                 return f"{sign}$0.00 (—)"
-            pnl = t.pnl or 0.0
+            pnl = _effective_pnl(t)
             strat = t.strategy or "calibration"
             return f"{'+' if pnl >= 0 else ''}${pnl:.2f} ({strat})"
 
@@ -1496,12 +1513,12 @@ def send_weekly_telegram_command() -> None:
             .count()
         ) or 0
 
-        # ── Whale smart money moves ───────────────────────────────────────
+        # ── Whale large position moves ────────────────────────────────────
         whale_moves = (
             session.query(WhaleActivity)
             .filter(
                 WhaleActivity.timestamp >= week_start,
-                WhaleActivity.whale_signal == "smart_money_present",
+                WhaleActivity.whale_signal == "large_position",
             )
             .count()
         ) or 0
@@ -1537,6 +1554,83 @@ def send_weekly_telegram_command() -> None:
 
     send_telegram(msg, settings.telegram_bot_token, settings.telegram_chat_id)
     typer.echo(msg)
+
+
+@app.command("update-seed")
+def update_seed_command() -> None:
+    """Regenerate db/seed_data.sql from current DB state.
+
+    Called after each CI run so the seed file always reflects the latest
+    real balance. A missing artifact will then restore to the correct state
+    rather than the hardcoded $763/$3815 baseline.
+
+    Trades:              INSERT OR IGNORE  (never loses newer rows)
+    Portfolio snapshots: INSERT OR REPLACE (always reflects current balances)
+    """
+    import os
+
+    settings = get_settings()
+    engine = build_engine(settings)
+
+    # Find output path: GITHUB_WORKSPACE first (CI), then repo-relative paths
+    _here = Path(__file__).parent
+    candidates = [
+        Path(os.environ.get("GITHUB_WORKSPACE", "")) / "db" / "seed_data.sql",
+        _here.parent.parent / "db" / "seed_data.sql",   # editable local install
+        Path(os.getcwd()) / "db" / "seed_data.sql",
+    ]
+    out_path = next((p for p in candidates if p.parent.is_dir()), None)
+    if out_path is None:
+        typer.echo("update-seed: db/ directory not found", err=True)
+        raise typer.Exit(code=1)
+
+    def _sql_val(v: object) -> str:
+        """Format a Python value as a SQL literal."""
+        if v is None:
+            return "NULL"
+        if isinstance(v, bool):
+            return "1" if v else "0"
+        if isinstance(v, (int, float)):
+            return repr(v)
+        return "'" + str(v).replace("'", "''") + "'"
+
+    with engine.connect() as conn:
+        # Read column names from schema
+        trade_col_names = [c[1] for c in conn.execute(text("PRAGMA table_info(trades)")).fetchall()]
+        snap_col_names = [c[1] for c in conn.execute(text("PRAGMA table_info(portfolio_snapshots)")).fetchall()]
+
+        trade_rows = conn.execute(
+            text("SELECT * FROM trades WHERE status='closed' ORDER BY id")
+        ).fetchall()
+        snap_rows = conn.execute(
+            text("SELECT * FROM portfolio_snapshots ORDER BY id")
+        ).fetchall()
+
+    lines = [
+        "PRAGMA foreign_keys = OFF;",
+        "BEGIN TRANSACTION;",
+        "",
+        "-- trades: INSERT OR IGNORE preserves newer data if rows already exist",
+    ]
+    cols_str = ", ".join(trade_col_names)
+    for row in trade_rows:
+        vals = ", ".join(_sql_val(v) for v in row)
+        lines.append(f"INSERT OR IGNORE INTO trades ({cols_str}) VALUES ({vals});")
+
+    lines += [
+        "",
+        "-- portfolio_snapshots: INSERT OR REPLACE so latest balances always win",
+    ]
+    cols_str = ", ".join(snap_col_names)
+    for row in snap_rows:
+        vals = ", ".join(_sql_val(v) for v in row)
+        lines.append(f"INSERT OR REPLACE INTO portfolio_snapshots ({cols_str}) VALUES ({vals});")
+
+    lines += ["", "COMMIT;", "PRAGMA foreign_keys = ON;", ""]
+    out_path.write_text("\n".join(lines))
+    typer.echo(
+        f"update-seed: wrote {len(trade_rows)} trades, {len(snap_rows)} snapshots → {out_path}"
+    )
 
 
 if __name__ == "__main__":

@@ -23,6 +23,8 @@ env:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed for git push of seed_data.sql
 
     steps:
       - uses: actions/checkout@v4
@@ -125,6 +127,19 @@ jobs:
           path: /home/runner/work/poly-what/poly-what/watchdog.db
           retention-days: 7
           overwrite: true
+
+      # ── Step 6: Update seed file in repo ─────────────────────────────────
+      # This ensures a missing artifact never loses accumulated PnL.
+      # The [skip ci] tag prevents this commit from triggering a new run.
+      - name: Update seed data
+        if: always()
+        run: |
+          watchdog update-seed || true
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add db/seed_data.sql
+          git diff --staged --quiet || git commit -m "[skip ci] update seed $(date -u +'%Y-%m-%dT%H:%M')"
+          git push || true
 
   # ── Weekly summary — fires only on Sundays at 17:00 UTC (12pm Colombia) ──
   weekly-summary:

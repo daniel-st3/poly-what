@@ -170,12 +170,18 @@ def update_portfolios(session: Session, run_window_hours: int = 6) -> dict[float
 
         # All trades since last snapshot
         new_trades = _fetch_closed_trades(session, after=latest.timestamp)
-        balance, peak, _new_pnl, _ = _apply_trades(
-            new_trades, latest.current_balance, latest.peak_balance
-        )
 
         # "This run" = trades from within the run window (for display)
         run_trades = [t for t in new_trades if t.closed_at is not None and t.closed_at >= run_start]
+
+        print(
+            f"📊 portfolio update ${cap:.0f}: last_snapshot={latest.timestamp.strftime('%m-%d %H:%M')}, "
+            f"new_trades={len(new_trades)}, run_trades={len(run_trades)}"
+        )
+
+        balance, peak, _new_pnl, _ = _apply_trades(
+            new_trades, latest.current_balance, latest.peak_balance
+        )
         _, _, run_pnl, run_count = _apply_trades(
             run_trades, latest.current_balance, latest.peak_balance
         )

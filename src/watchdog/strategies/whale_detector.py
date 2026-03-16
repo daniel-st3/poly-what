@@ -1,9 +1,9 @@
 """Module 4: Smart Whale Watchlist via Polymarket Holders API.
 
 Strategy:
-1. Fetch top active markets from gamma-api (by volume)
+1. Fetch top active markets from gamma-api (by 24h CLOB volume)
 2. For each market, GET https://data-api.polymarket.com/holders?market=<condition_id>
-3. Flag any holder with position > WHALE_THRESHOLD_USD as WHALE_ALERT
+3. Flag any holder with position > WHALE_THRESHOLD_USD as large_position signal
 
 Note: The /rankings endpoint (used previously) no longer exists (HTTP 404).
 This implementation detects large positions directly via the holders endpoint.
@@ -30,7 +30,7 @@ GAMMA_API = "https://gamma-api.polymarket.com"
 HOLDERS_URL = "https://data-api.polymarket.com/holders"
 REQUEST_TIMEOUT = 15.0
 TOP_N_MARKETS = 30       # fetch this many top markets from gamma-api
-WHALE_THRESHOLD_USD = 5_000.0  # minimum position size to flag as whale
+WHALE_THRESHOLD_USD = 1_000.0  # lowered from $5,000 to catch mid-size whales
 
 
 def _fetch_top_condition_ids(n: int = TOP_N_MARKETS) -> list[dict[str, Any]]:
@@ -97,6 +97,16 @@ class WhaleFlowDetector:
         whale_signals = 0
         markets_with_whales = 0
         now = datetime.now(UTC)
+        total_holders_checked = 0
+        overall_max_amount = 0.0
+
+        # Track wallets seen this run to avoid duplicate SmartWallet inserts
+        # (autoflush=False means session.query won't find just-added rows)
+        seen_wallets: dict[str, SmartWallet] = {}
+
+        # Pre-load existing SmartWallet rows so upsert works correctly
+        for sw in session.query(SmartWallet).all():
+            seen_wallets[sw.proxy_wallet] = sw
 
         for mkt in top_markets:
             cid = mkt["conditionId"]
@@ -124,11 +134,17 @@ class WhaleFlowDetector:
                 continue
 
             market_flagged = False
+            market_holder_count = 0
+            market_max_amount = 0.0
+
             for token_data in data:
                 for holder in token_data.get("holders", []):
                     wallet = str(holder.get("proxyWallet") or "").strip()
                     amount = float(holder.get("amount") or 0.0)
                     name = str(holder.get("name") or holder.get("pseudonym") or wallet[:10])
+                    market_holder_count += 1
+                    market_max_amount = max(market_max_amount, amount)
+                    overall_max_amount = max(overall_max_amount, amount)
 
                     if amount < threshold_usd:
                         continue
@@ -140,26 +156,23 @@ class WhaleFlowDetector:
 
                     print(f"🐋 WHALE: {question[:50]!r} — {name} holds ${amount:,.0f}")
 
-                    # Upsert SmartWallet (repurposed as large-position tracker)
-                    existing = (
-                        session.query(SmartWallet)
-                        .filter(SmartWallet.proxy_wallet == wallet)
-                        .first()
-                    )
-                    if existing:
-                        existing.pnl = amount   # amount treated as proxy for "size"
-                        existing.volume = amount
-                        existing.updated_at = now
+                    # Upsert SmartWallet — use in-memory cache to avoid duplicate inserts
+                    # when same wallet appears across multiple markets (autoflush=False)
+                    if wallet in seen_wallets:
+                        sw = seen_wallets[wallet]
+                        sw.pnl = amount
+                        sw.volume = amount
+                        sw.updated_at = now
                     else:
-                        session.add(
-                            SmartWallet(
-                                proxy_wallet=wallet,
-                                pnl=amount,
-                                volume=amount,
-                                rank=0,
-                                updated_at=now,
-                            )
+                        sw = SmartWallet(
+                            proxy_wallet=wallet,
+                            pnl=amount,
+                            volume=amount,
+                            rank=0,
+                            updated_at=now,
                         )
+                        session.add(sw)
+                        seen_wallets[wallet] = sw
 
                     # Log to whale_activity
                     session.add(
@@ -173,9 +186,17 @@ class WhaleFlowDetector:
                         )
                     )
 
+            total_holders_checked += market_holder_count
+            if market_holder_count > 0:
+                LOGGER.debug(
+                    "WHALE WATCH: %s — %d holders, max $%.0f",
+                    slug, market_holder_count, market_max_amount,
+                )
+
         session.commit()
         print(
-            f"🐋 WHALE WATCH done: {len(top_markets)} markets checked, "
-            f"{markets_with_whales} with whale positions, {whale_signals} whale alert(s)"
+            f"🐋 WHALE WATCH done: {len(top_markets)} markets, "
+            f"{total_holders_checked} holders checked, max position ${overall_max_amount:,.0f}, "
+            f"{markets_with_whales} markets with whales, {whale_signals} alert(s)"
         )
         return {"whales_found": whale_signals, "on_tracked_markets": markets_with_whales}
