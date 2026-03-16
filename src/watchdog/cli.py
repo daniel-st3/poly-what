@@ -1377,7 +1377,7 @@ def simulate_capital_command(
 @app.command("send-weekly-telegram")
 def send_weekly_telegram_command() -> None:
     """Send a weekly performance summary to Telegram (fires every Sunday)."""
-    from datetime import UTC, datetime, timedelta
+    from datetime import datetime, timedelta
 
     from sqlalchemy import select
 

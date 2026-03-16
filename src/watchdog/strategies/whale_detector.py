@@ -22,7 +22,7 @@ from typing import Any
 import httpx
 from sqlalchemy.orm import Session
 
-from watchdog.db.models import Market, SmartWallet, Trade, WhaleActivity
+from watchdog.db.models import SmartWallet, WhaleActivity
 
 LOGGER = logging.getLogger(__name__)
 
