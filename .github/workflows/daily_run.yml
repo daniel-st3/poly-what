@@ -4,7 +4,7 @@ on:
   schedule:
     - cron: '0 11 * * *'   # 6am Colombia (UTC-5) — daily
     - cron: '0 14 * * *'   # 9am Colombia (UTC-5) — daily
-    - cron: '0 17 * * *'   # 12pm Colombia (UTC-5) — daily
+    - cron: '0 17 * * 1-6' # 12pm Colombia (UTC-5) — Mon–Sat (Sun handled by weekly cron below)
     - cron: '0 21 * * *'   # 4pm Colombia (UTC-5) — daily
     - cron: '0 17 * * 0'   # Sunday 12pm Colombia (UTC-5) — weekly summary
   workflow_dispatch:

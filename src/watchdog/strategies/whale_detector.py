@@ -30,7 +30,7 @@ GAMMA_API = "https://gamma-api.polymarket.com"
 HOLDERS_URL = "https://data-api.polymarket.com/holders"
 REQUEST_TIMEOUT = 15.0
 TOP_N_MARKETS = 30       # fetch this many top markets from gamma-api
-WHALE_THRESHOLD_USD = 1_000.0  # lowered from $5,000 to catch mid-size whales
+WHALE_THRESHOLD_USD = 3_000.0  # $3k floor — filters noise while catching meaningful positions
 
 
 def _fetch_top_condition_ids(n: int = TOP_N_MARKETS) -> list[dict[str, Any]]:
