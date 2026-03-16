@@ -482,8 +482,8 @@ INSERT OR REPLACE INTO portfolio_snapshots (id, timestamp, starting_capital, cur
 INSERT OR REPLACE INTO portfolio_snapshots (id, timestamp, starting_capital, current_balance, peak_balance, run_pnl, total_return_pct, drawdown_pct, trades_today) VALUES (8, '2026-03-15 17:45:31.859223', 500.0, 3815.59749636097, 3815.59749636097, 0.0, 663.119499272194, 0.0, 0);
 INSERT OR REPLACE INTO portfolio_snapshots (id, timestamp, starting_capital, current_balance, peak_balance, run_pnl, total_return_pct, drawdown_pct, trades_today) VALUES (9, '2026-03-15 21:40:33.531815', 100.0, 763.119499272194, 763.119499272194, 0.0, 663.119499272194, 0.0, 0);
 INSERT OR REPLACE INTO portfolio_snapshots (id, timestamp, starting_capital, current_balance, peak_balance, run_pnl, total_return_pct, drawdown_pct, trades_today) VALUES (10, '2026-03-15 21:40:33.531815', 500.0, 3815.59749636097, 3815.59749636097, 0.0, 663.119499272194, 0.0, 0);
-INSERT OR REPLACE INTO portfolio_snapshots (id, timestamp, starting_capital, current_balance, peak_balance, run_pnl, total_return_pct, drawdown_pct, trades_today) VALUES (11, '2026-03-16 11:38:25.212898', 100.0, 763.119499272194, 763.119499272194, 0.0, 663.119499272194, 0.0, 0);
-INSERT OR REPLACE INTO portfolio_snapshots (id, timestamp, starting_capital, current_balance, peak_balance, run_pnl, total_return_pct, drawdown_pct, trades_today) VALUES (12, '2026-03-16 11:38:25.212898', 500.0, 3815.59749636097, 3815.59749636097, 0.0, 663.119499272194, 0.0, 0);
+INSERT OR REPLACE INTO portfolio_snapshots (id, timestamp, starting_capital, current_balance, peak_balance, run_pnl, total_return_pct, drawdown_pct, trades_today) VALUES (11, '2026-03-16 15:14:52.699904', 100.0, 763.119499272194, 763.119499272194, 0.0, 663.119499272194, 0.0, 0);
+INSERT OR REPLACE INTO portfolio_snapshots (id, timestamp, starting_capital, current_balance, peak_balance, run_pnl, total_return_pct, drawdown_pct, trades_today) VALUES (12, '2026-03-16 15:14:52.699904', 500.0, 3815.59749636097, 3815.59749636097, 0.0, 663.119499272194, 0.0, 0);
 
 COMMIT;
 PRAGMA foreign_keys = ON;
