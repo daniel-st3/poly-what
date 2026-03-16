@@ -30,3 +30,7 @@ becker_analysis/
 
 # Packaging metadata
 *.egg-info/
+
+# Logs
+logs/
+*.log
