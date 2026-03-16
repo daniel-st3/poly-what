@@ -57,6 +57,15 @@ jobs:
             echo "⚠️ No artifact found — fresh DB"
           fi
 
+      # ── Step 1b: Delete stale artifact so next run starts fresh ──────────
+      - name: Delete stale artifact
+        run: |
+          gh api repos/${{ github.repository }}/actions/artifacts \
+            --jq '.artifacts[] | select(.name=="watchdog-db") | .id' \
+            | xargs -I{} gh api --method DELETE repos/${{ github.repository }}/actions/artifacts/{}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       # ── Step 2: Init DB (create missing tables, run migrations) ──────────
       - name: Init DB
         run: watchdog init-db

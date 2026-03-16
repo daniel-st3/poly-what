@@ -127,10 +127,10 @@ def restore_baseline_command() -> None:
         )
         return
 
-    _baseline_ts = datetime(2026, 3, 14, 18, 20, 9, 289024)  # naive UTC, matches seed trades
+    _baseline_ts = datetime(2026, 3, 15, 0, 0, 0)  # naive UTC — clean reset as of 2026-03-15
     _baselines = [
-        (100.0, 763.119499272194),
-        (500.0, 3815.59749636097),
+        (100.0, 100.0),
+        (500.0, 500.0),
     ]
     typer.echo(
         f"restore-baseline: no valid snapshots found "
@@ -1562,7 +1562,7 @@ def update_seed_command() -> None:
 
     Called after each CI run so the seed file always reflects the latest
     real balance. A missing artifact will then restore to the correct state
-    rather than the hardcoded $763/$3815 baseline.
+    rather than the hardcoded $100/$500 clean-slate baseline.
 
     Trades:              INSERT OR IGNORE  (never loses newer rows)
     Portfolio snapshots: INSERT OR REPLACE (always reflects current balances)
