@@ -1558,14 +1558,14 @@ def send_weekly_telegram_command() -> None:
 
 @app.command("update-seed")
 def update_seed_command() -> None:
-    """Regenerate db/seed_data.sql from current DB state.
+    """Regenerate db/seed_data.sql from current DB state (trades only).
 
-    Called after each CI run so the seed file always reflects the latest
-    real balance. A missing artifact will then restore to the correct state
-    rather than the hardcoded $100/$500 clean-slate baseline.
+    Intentionally excludes portfolio_snapshots so stale mid-run balances can
+    never poison a fresh run. When the artifact is missing, restore-baseline
+    falls back to the clean $100/$500 hardcoded baseline — which is the
+    correct behaviour.
 
-    Trades:              INSERT OR IGNORE  (never loses newer rows)
-    Portfolio snapshots: INSERT OR REPLACE (always reflects current balances)
+    Trades: INSERT OR IGNORE (never loses newer rows)
     """
     import os
 
@@ -1595,15 +1595,9 @@ def update_seed_command() -> None:
         return "'" + str(v).replace("'", "''") + "'"
 
     with engine.connect() as conn:
-        # Read column names from schema
         trade_col_names = [c[1] for c in conn.execute(text("PRAGMA table_info(trades)")).fetchall()]
-        snap_col_names = [c[1] for c in conn.execute(text("PRAGMA table_info(portfolio_snapshots)")).fetchall()]
-
         trade_rows = conn.execute(
             text("SELECT * FROM trades WHERE status='closed' ORDER BY id")
-        ).fetchall()
-        snap_rows = conn.execute(
-            text("SELECT * FROM portfolio_snapshots ORDER BY id")
         ).fetchall()
 
     lines = [
@@ -1617,19 +1611,10 @@ def update_seed_command() -> None:
         vals = ", ".join(_sql_val(v) for v in row)
         lines.append(f"INSERT OR IGNORE INTO trades ({cols_str}) VALUES ({vals});")
 
-    lines += [
-        "",
-        "-- portfolio_snapshots: INSERT OR REPLACE so latest balances always win",
-    ]
-    cols_str = ", ".join(snap_col_names)
-    for row in snap_rows:
-        vals = ", ".join(_sql_val(v) for v in row)
-        lines.append(f"INSERT OR REPLACE INTO portfolio_snapshots ({cols_str}) VALUES ({vals});")
-
     lines += ["", "COMMIT;", "PRAGMA foreign_keys = ON;", ""]
     out_path.write_text("\n".join(lines))
     typer.echo(
-        f"update-seed: wrote {len(trade_rows)} trades, {len(snap_rows)} snapshots → {out_path}"
+        f"update-seed: wrote {len(trade_rows)} trades (no portfolio snapshots) → {out_path}"
     )
 
 
