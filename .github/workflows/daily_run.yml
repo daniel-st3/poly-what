@@ -25,6 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write   # needed for git push of seed_data.sql
+      actions: write    # needed to delete stale watchdog-db artifact
 
     steps:
       - uses: actions/checkout@v4
@@ -62,7 +63,7 @@ jobs:
         run: |
           gh api repos/${{ github.repository }}/actions/artifacts \
             --jq '.artifacts[] | select(.name=="watchdog-db") | .id' \
-            | xargs -I{} gh api --method DELETE repos/${{ github.repository }}/actions/artifacts/{}
+            | xargs -I{} gh api --method DELETE repos/${{ github.repository }}/actions/artifacts/{} || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
