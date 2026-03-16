@@ -37,48 +37,74 @@ class IntraEventArbScanner:
     def scan(
         self,
         session: Session,
-        rest_client: PolymarketRestClient,
+        rest_client: PolymarketRestClient | None = None,
         is_paper: bool = True,
+        events: list[dict[str, Any]] | None = None,
+        historical_mode: bool = False,
     ) -> dict[str, Any]:
-        """Run one scan cycle. Returns summary stats dict."""
-        print("\n📊 ARB SCAN")
+        """Run one scan cycle. Returns summary stats dict.
 
-        try:
-            events = rest_client.get_events(limit=100)
-        except Exception as exc:
-            LOGGER.warning("ARB SCAN: failed to fetch events — %s", exc)
-            print("📊 ARB SCAN done: fetch failed, skipping")
-            return {"events_scanned": 0, "opportunities": 0, "est_daily_profit_cents": 0.0}
+        When ``historical_mode=True``:
+        - ``events`` must be pre-populated; ``rest_client`` is ignored.
+        - No DB writes are performed (no ArbOpportunity rows, no Trade rows).
+        - No session.commit() is called.
+        - The return dict gains an ``opportunities_detail`` key with one entry
+          per detected opportunity.
+
+        When ``historical_mode=False`` (default):
+        - Behaviour is identical to before this change was made.
+        """
+        if not historical_mode:
+            print("\n📊 ARB SCAN")
+
+        if events is None:
+            try:
+                events = rest_client.get_events(limit=100)  # type: ignore[union-attr]
+            except Exception as exc:
+                LOGGER.warning("ARB SCAN: failed to fetch events — %s", exc)
+                if not historical_mode:
+                    print("📊 ARB SCAN done: fetch failed, skipping")
+                return {"events_scanned": 0, "opportunities": 0, "est_daily_profit_cents": 0.0}
 
         events_scanned = len(events)
         opportunities_found = 0
         total_profit_cents = 0.0
+        opportunities_detail: list[dict[str, Any]] = []
 
         for event in events:
-            result = self._process_event(session, event, is_paper)
+            result = self._process_event(session, event, is_paper, historical_mode=historical_mode)
             if result:
                 opportunities_found += 1
                 total_profit_cents += result["profit_cents"]
+                if historical_mode:
+                    opportunities_detail.append(result)
 
-        session.commit()
+        if not historical_mode:
+            session.commit()
 
         est_daily = total_profit_cents * 3  # runs 3x/day
-        print(
-            f"📊 ARB SCAN done: {events_scanned} events scanned, "
-            f"{opportunities_found} opportunities found, "
-            f"est. ${est_daily / 100:.2f}/day"
-        )
-        return {
+        if not historical_mode:
+            print(
+                f"📊 ARB SCAN done: {events_scanned} events scanned, "
+                f"{opportunities_found} opportunities found, "
+                f"est. ${est_daily / 100:.2f}/day"
+            )
+
+        summary: dict[str, Any] = {
             "events_scanned": events_scanned,
             "opportunities": opportunities_found,
             "est_daily_profit_cents": est_daily,
         }
+        if historical_mode:
+            summary["opportunities_detail"] = opportunities_detail
+        return summary
 
     def _process_event(
         self,
         session: Session,
         event: dict[str, Any],
         is_paper: bool,
+        historical_mode: bool = False,
     ) -> dict[str, Any] | None:
         event_slug = event.get("event_slug", "")
         markets = event.get("markets", [])
@@ -133,23 +159,30 @@ class IntraEventArbScanner:
             profit_cents,
         )
 
-        # Persist to arb_opportunities
-        opp = ArbOpportunity(
-            event_slug=event_slug,
-            type=arb_type,
-            sum_of_yes=yes_sum,
-            profit_cents=profit_cents,
-            timestamp=datetime.now(UTC),
-            was_actioned=False,
-            strategy="intra_event_arb",
-        )
-        session.add(opp)
+        if not historical_mode:
+            # Persist to arb_opportunities
+            opp = ArbOpportunity(
+                event_slug=event_slug,
+                type=arb_type,
+                sum_of_yes=yes_sum,
+                profit_cents=profit_cents,
+                timestamp=datetime.now(UTC),
+                was_actioned=False,
+                strategy="intra_event_arb",
+            )
+            session.add(opp)
 
-        # Paper trade (deduplication guard)
-        if is_paper:
-            self._create_paper_trades(session, event_slug, markets, yes_prices, arb_type)
+            # Paper trade (deduplication guard)
+            if is_paper:
+                self._create_paper_trades(session, event_slug, markets, yes_prices, arb_type)
 
-        return {"profit_cents": profit_cents}
+        return {
+            "profit_cents": profit_cents,
+            "event_slug": event_slug,
+            "arb_type": arb_type,
+            "yes_sum": yes_sum,
+            "markets_count": len(yes_prices),
+        }
 
     def _create_paper_trades(
         self,
