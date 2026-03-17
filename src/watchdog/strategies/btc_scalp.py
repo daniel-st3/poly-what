@@ -160,18 +160,20 @@ class BtcScalpStrategy:
         now = datetime.now(UTC)
         cutoff = now + timedelta(minutes=NEAR_EXPIRY_MINUTES)
 
+        params = {"tag": "crypto", "active": "true", "closed": "false"}
+        print(f"[DEBUG] Querying Gamma with params: {params}", flush=True)
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.get(
-                    f"{GAMMA_API_BASE}/markets",
-                    params={"tag": "crypto", "active": "true", "closed": "false"},
-                )
+                resp = await client.get(f"{GAMMA_API_BASE}/markets", params=params)
             if resp.status_code != 200:
                 return
             markets: list[dict[str, Any]] = resp.json()
         except Exception as exc:
             LOGGER.warning("Gamma API poll failed: %s", exc)
             return
+
+        if markets:
+            print(f"[DEBUG] Raw market sample: {markets[0]}", flush=True)
 
         settings = get_settings()
         engine = build_engine(settings)
@@ -317,6 +319,11 @@ class BtcScalpStrategy:
                 if market is None:
                     continue
 
+                sides = [t.side for t in open_trades if t.market_id == market_id]
+                print(
+                    f"[DEBUG] Checking position: slug={market.slug} condition_id={market.condition_id} side={sides}",
+                    flush=True,
+                )
                 outcome = (market.resolution_outcome or "").upper()
 
                 if outcome not in ("YES", "NO") and market.condition_id:
