@@ -13,4 +13,4 @@ RUN pip install -e .
 # Copy rest of project
 COPY . .
 
-CMD ["python", "-m", "watchdog", "run-btc-scalp"]
+CMD ["watchdog", "run-btc-scalp"]
