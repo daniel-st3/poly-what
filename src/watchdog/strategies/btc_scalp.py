@@ -16,6 +16,7 @@ import json
 import logging
 import random
 import re
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -165,53 +166,43 @@ class BtcScalpStrategy:
         now = datetime.now(UTC)
         cutoff = now + timedelta(minutes=NEAR_EXPIRY_MINUTES)
 
-        # ── Fetch from /events with btc-updown slug pattern ─────────────────
-        async def _get(url: str, params: dict[str, Any]) -> httpx.Response | None:
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    return await client.get(url, params=params)
-            except Exception as exc:
-                LOGGER.warning("HTTP request failed: %s", exc)
-                return None
+        # ── Generate slugs from current timestamp (btc-updown-5m-[unix_5min_boundary]) ──
+        def _btc_updown_slugs() -> list[str]:
+            ts = int(time.time())
+            return [f"btc-updown-5m-{(ts // 300 + offset) * 300}" for offset in range(4)]
 
         events_url = f"{GAMMA_API_BASE}/events"
-
-        # Primary: partial slug match for all btc-updown events
-        r = await _get(events_url, {"active": "true", "closed": "false", "limit": "100", "slug": "btc-updown"})
-        print(
-            f"[DEBUG] Events slug=btc-updown: {r.status_code if r else 'err'} | {(r.text[:300] if r else '')}",
-            flush=True,
-        )
-
-        # Diagnostic: fetch the known-good specific event to see full structure
-        r2 = await _get(events_url, {"slug": "btc-updown-5m-1773761100"})
-        print(f"[DEBUG] Specific event: {r2.text[:500] if r2 else 'err'}", flush=True)
-
+        slugs = _btc_updown_slugs()
         events: list[dict[str, Any]] = []
-        if r and r.status_code == 200:
-            raw = r.json()
-            events = raw if isinstance(raw, list) else raw.get("data", raw.get("events", []))
 
-        # Markets are nested inside each event under "markets" key
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for slug in slugs:
+                try:
+                    resp = await client.get(events_url, params={"slug": slug})
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if data:
+                            events.extend(data if isinstance(data, list) else [data])
+                            print(f"[BTC Scalp] Found event: {slug}", flush=True)
+                            # Dump nested markets structure on first hit
+                            first = data[0] if isinstance(data, list) else data
+                            print(
+                                f"[DEBUG] Event markets: {json.dumps(first.get('markets', []))[:500]}",
+                                flush=True,
+                            )
+                except Exception as exc:
+                    LOGGER.warning("Gamma /events fetch failed for %s: %s", slug, exc)
+
+        print(f"[BTC Scalp] Active btc-updown events: {len(events)}", flush=True)
+
+        # Markets nested inside each event
         btc_markets: list[dict[str, Any]] = []
         for event in events:
             for m in event.get("markets", []):
-                # Attach event-level slug to market for logging
                 m.setdefault("_event_slug", event.get("slug", ""))
                 btc_markets.append(m)
 
-        # Sort soonest-expiring first (client-side)
         btc_markets = sorted(btc_markets, key=lambda m: m.get("endDate", ""), reverse=False)
-
-        print(
-            f"[BTC Scalp] Events found: {len(events)} | Nested markets: {len(btc_markets)}",
-            flush=True,
-        )
-        if btc_markets:
-            print(
-                f"[DEBUG] First market: {btc_markets[0].get('question')} | endDate: {btc_markets[0].get('endDate')}",
-                flush=True,
-            )
 
         if not btc_markets:
             print("[BTC Scalp] No btc-updown markets found this cycle", flush=True)
