@@ -54,6 +54,7 @@ class BtcScalpStrategy:
         self._trades_closed: int = 0
         self._pnl: float = 0.0
         self._has_sent_online_ping: bool = False
+        self._fired_signals: set[str] = set()
         _s = get_settings()
         self._tg_token: str | None = _s.telegram_bot_token
         self._tg_chat: str | None = _s.telegram_chat_id
@@ -187,7 +188,7 @@ class BtcScalpStrategy:
         up_edge = our_up_prob - up_price
         down_edge = our_down_prob - down_price
 
-        MIN_EDGE = 0.06
+        MIN_EDGE = 0.12
         if up_edge > MIN_EDGE:
             return ("Up", up_edge, our_up_prob, up_price)
         if down_edge > MIN_EDGE:
@@ -273,7 +274,8 @@ class BtcScalpStrategy:
             except ValueError:
                 continue
 
-            if end_dt > cutoff or end_dt <= now:
+            minutes_left = (end_dt - now).total_seconds() / 60
+            if not (1.5 <= minutes_left <= 8.0):
                 continue
 
             signal = self._compute_signal(m)
@@ -281,10 +283,15 @@ class BtcScalpStrategy:
                 continue
 
             side, edge, our_prob, market_price = signal
+            slug = m.get("slug") or m.get("conditionId") or f"btc-scalp-{int(now.timestamp())}"
+
+            signal_key = f"{m.get('conditionId', slug)}-{side}"
+            if signal_key in self._fired_signals:
+                continue
+            self._fired_signals.add(signal_key)
+
             self._signals += 1
             qualified_count += 1
-            minutes_left = (end_dt - now).total_seconds() / 60
-            slug = m.get("slug") or m.get("conditionId") or f"btc-scalp-{int(now.timestamp())}"
             liquidity = float(m.get("liquidity") or 0)
 
             print(
