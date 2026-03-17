@@ -25,10 +25,11 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-MIN_EVENT_VOLUME_USD = 5_000.0
-MIN_PROFIT_CENTS = 3.0
+MIN_EVENT_VOLUME_USD = 50_000.0
+MIN_PROFIT_CENTS = 5.0
 UNDERPRICED_THRESHOLD = 0.97
 OVERPRICED_THRESHOLD = 1.03
+MAX_YES_SUM = 1.10
 
 
 class IntraEventArbScanner:
@@ -136,6 +137,11 @@ class IntraEventArbScanner:
             return None
 
         yes_sum = sum(yes_prices)
+
+        # Reject non-exclusive outcome bundles (e.g. "who wins the NHL championship"
+        # with 32 teams — sum legitimately exceeds 1 and is not a real arb).
+        if yes_sum > MAX_YES_SUM:
+            return None
 
         # Determine arb type
         if yes_sum < UNDERPRICED_THRESHOLD:
