@@ -88,6 +88,9 @@ class BtcScalpStrategy:
                     "WS failed %d times — switching to CoinGecko HTTP fallback (30s interval)",
                     ws_failures,
                 )
+                self._notify(
+                    "⚠️ BTC Scalp: Coinbase WS failed all retries — switched to CoinGecko fallback"
+                )
                 while True:
                     price = await self._fetch_btc_price_http()
                     if price:
@@ -105,6 +108,7 @@ class BtcScalpStrategy:
                     await ws.send(json.dumps(subscribe_msg))
                     LOGGER.info("BTC price feed connected to Coinbase Advanced Trade")
                     ws_failures = 0  # reset on successful connect
+                    print("Coinbase WS reconnected ✅", flush=True)
 
                     async for raw in ws:
                         msg = json.loads(raw)
@@ -174,6 +178,7 @@ class BtcScalpStrategy:
         init_db(engine)
         session_factory = build_session_factory(engine)
 
+        qualified_count = 0
         for m in markets:
             question = m.get("question") or ""
             if "BTC" not in question.upper():
@@ -209,6 +214,7 @@ class BtcScalpStrategy:
                 continue
 
             self._signals += 1
+            qualified_count += 1
             minutes_left = (end_dt - now).total_seconds() / 60
             slug = m.get("slug") or m.get("conditionId") or f"btc-scalp-{int(now.timestamp())}"
             print(
@@ -274,6 +280,11 @@ class BtcScalpStrategy:
                     score,
                 )
 
+        print(
+            f"[BTC Scalp] Scanning... BTC=${btc:,.0f} | Markets found: {len(markets)} | Qualified: {qualified_count}",
+            flush=True,
+        )
+
     # ── Resolution check ────────────────────────────────────────────────────
 
     async def _check_resolutions(self) -> None:
@@ -292,11 +303,14 @@ class BtcScalpStrategy:
                 )
                 .all()
             )
+            n_open = len(open_trades)
             if not open_trades:
+                print("[Resolution] Checked 0 open positions, 0 resolved and closed", flush=True)
                 return
 
             market_ids = {t.market_id for t in open_trades}
             now = datetime.now(UTC)
+            closed_this_run = 0
 
             for market_id in market_ids:
                 market = session.get(Market, market_id)
@@ -345,6 +359,7 @@ class BtcScalpStrategy:
                     trade.close_reason = "resolution"
                     self._pnl += pnl
                     self._trades_closed += 1
+                    closed_this_run += 1
                     LOGGER.info(
                         "BTC SCALP: closed %s side=%s outcome=%s pnl=%.4f",
                         market.slug,
@@ -354,6 +369,10 @@ class BtcScalpStrategy:
                     )
 
             session.commit()
+        print(
+            f"[Resolution] Checked {n_open} open positions, {closed_this_run} resolved and closed",
+            flush=True,
+        )
 
     # ── Main loop ───────────────────────────────────────────────────────────
 
