@@ -54,6 +54,10 @@ class BtcScalpStrategy:
         _s = get_settings()
         self._tg_token: str | None = _s.telegram_bot_token
         self._tg_chat: str | None = _s.telegram_chat_id
+        # Ensure all tables (trades, markets, …) exist before any DB access
+        _engine = build_engine(_s)
+        init_db(_engine)
+        print("[BTC Scalp] DB initialised ✅", flush=True)
 
     def _notify(self, msg: str) -> None:
         """Fire-and-forget Telegram notification (sync, swallows errors)."""
@@ -163,30 +167,27 @@ class BtcScalpStrategy:
 
         BTC_KEYWORDS = ("btc", "bitcoin", "above $", "below $", "up or down")
         STRIKE_KEYWORDS = ("above", "below", "up or down", "higher", "lower")
-        end_date_max = (now + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         async def _fetch_markets(params: dict[str, Any]) -> list[dict[str, Any]]:
             try:
                 async with httpx.AsyncClient(timeout=8.0) as client:
                     resp = await client.get(f"{GAMMA_API_BASE}/markets", params=params)
                 if resp.status_code != 200:
-                    LOGGER.warning("Gamma API returned %d", resp.status_code)
+                    LOGGER.warning("Gamma API returned %d: %s", resp.status_code, resp.text[:200])
                     return []
                 return resp.json()
             except Exception as exc:
                 LOGGER.warning("Gamma API poll failed: %s", exc)
                 return []
 
-        # Primary query: soonest-expiring active markets within next 2 hours
+        # Primary query: soonest-expiring active markets (client-side end_date filter)
         primary_params: dict[str, Any] = {
             "active": "true",
             "closed": "false",
             "archived": "false",
             "limit": "100",
-            "order": "end_date",
+            "order": "end_date_iso",
             "ascending": "true",
-            "end_date_max": end_date_max,
-            "liquidity_num_min": "100",
         }
         print(f"[DEBUG] Querying Gamma with params: {primary_params}", flush=True)
         markets = await _fetch_markets(primary_params)
@@ -206,13 +207,14 @@ class BtcScalpStrategy:
                 flush=True,
             )
 
-        # Fallback: slug-contains search if primary found nothing
+        # Fallback: top-volume active markets, filter BTC client-side
         if not btc_markets:
             fallback_params: dict[str, Any] = {
                 "active": "true",
                 "closed": "false",
                 "limit": "50",
-                "slug_contains": "btc",
+                "order": "volume_24hr",
+                "ascending": "false",
             }
             print(f"[DEBUG] Primary returned 0 BTC markets — trying fallback: {fallback_params}", flush=True)
             fallback_markets = await _fetch_markets(fallback_params)
