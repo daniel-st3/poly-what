@@ -1,8 +1,12 @@
 """
 BTC intraday scalp strategy.
-Connects to Binance WebSocket for live BTC price,
+Connects to Coinbase Advanced Trade WebSocket for live BTC price,
 polls Polymarket Gamma API every 5s for near-expiry BTC markets,
 and paper-trades when certainty_score > 0.90 with 8c+ edge.
+
+Price feed priority:
+  1. Coinbase Advanced Trade WebSocket (wss://advanced-trade-ws.coinbase.com) — no geo-block
+  2. CoinGecko HTTP fallback (30s intervals) — if WebSocket fails 3 consecutive times
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import aiohttp
 import httpx
 import websockets
 
@@ -25,8 +30,11 @@ from watchdog.db.session import build_engine, build_session_factory
 
 LOGGER = logging.getLogger(__name__)
 
-BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@trade"
+COINBASE_WS_URL = "wss://advanced-trade-ws.coinbase.com"
+COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
 GAMMA_API_BASE = "https://gamma-api.polymarket.com"
+WS_MAX_FAILURES = 3
+HTTP_FALLBACK_INTERVAL_S = 30
 POLL_INTERVAL_S = 5
 RESOLUTION_CHECK_INTERVAL_S = 60
 CERTAINTY_THRESHOLD = 0.90
@@ -45,19 +53,67 @@ class BtcScalpStrategy:
 
     # ── Price feed ─────────────────────────────────────────────────────────
 
+    async def _fetch_btc_price_http(self) -> float | None:
+        """Fallback: CoinGecko simple price API — no API key, no geo-block, ~30s interval."""
+        try:
+            async with (
+                aiohttp.ClientSession() as session,
+                session.get(COINGECKO_URL, timeout=aiohttp.ClientTimeout(total=10)) as resp,
+            ):
+                data = await resp.json()
+                return float(data["bitcoin"]["usd"])
+        except Exception as exc:
+            LOGGER.warning("CoinGecko HTTP fallback failed: %s", exc)
+            return None
+
     async def _run_price_feed(self) -> None:
-        """Connect to Binance WebSocket and update BTC price on every trade event (~200ms)."""
+        """Connect to Coinbase Advanced Trade WebSocket for live BTC price.
+
+        Falls back to CoinGecko HTTP polling (30s) after 3 consecutive WS failures.
+        """
+        ws_failures = 0
+
         while True:
+            if ws_failures >= WS_MAX_FAILURES:
+                # HTTP fallback mode — poll CoinGecko every 30s
+                LOGGER.warning(
+                    "WS failed %d times — switching to CoinGecko HTTP fallback (30s interval)",
+                    ws_failures,
+                )
+                while True:
+                    price = await self._fetch_btc_price_http()
+                    if price:
+                        self._btc_price = price
+                        LOGGER.debug("CoinGecko price update: $%.0f", price)
+                    await asyncio.sleep(HTTP_FALLBACK_INTERVAL_S)
+
             try:
-                async with websockets.connect(BINANCE_WS_URL) as ws:
-                    LOGGER.info("BTC price feed connected to Binance")
+                async with websockets.connect(COINBASE_WS_URL) as ws:
+                    subscribe_msg = {
+                        "type": "subscribe",
+                        "product_ids": ["BTC-USD"],
+                        "channel": "ticker",
+                    }
+                    await ws.send(json.dumps(subscribe_msg))
+                    LOGGER.info("BTC price feed connected to Coinbase Advanced Trade")
+                    ws_failures = 0  # reset on successful connect
+
                     async for raw in ws:
                         msg = json.loads(raw)
-                        price = float(msg.get("p", 0))
-                        if price > 0:
-                            self._btc_price = price
+                        for event in msg.get("events", []):
+                            for ticker in event.get("tickers", []):
+                                price = float(ticker.get("price", 0))
+                                if price > 0:
+                                    self._btc_price = price
+
             except Exception as exc:
-                LOGGER.warning("BTC price feed error: %s — reconnecting in 5s", exc)
+                ws_failures += 1
+                LOGGER.warning(
+                    "Coinbase WS error (%d/%d): %s — reconnecting in 5s",
+                    ws_failures,
+                    WS_MAX_FAILURES,
+                    exc,
+                )
                 await asyncio.sleep(5)
 
     # ── Signal computation ──────────────────────────────────────────────────
