@@ -203,7 +203,8 @@ class BtcScalpStrategy:
             self._signals += 1
             print(
                 f"⚡ SIGNAL | BTC=${btc:,.0f} | strike=${strike:,.0f} | "
-                f"score={score:.2f} | ask={best_ask:.2f} | edge={edge * 100:.1f}¢ | side={side}"
+                f"score={score:.2f} | ask={best_ask:.2f} | edge={edge * 100:.1f}¢ | side={side}",
+                flush=True,
             )
 
             slug = m.get("slug") or m.get("conditionId") or f"btc-scalp-{int(now.timestamp())}"
@@ -356,7 +357,8 @@ class BtcScalpStrategy:
             f"⚡ BTC Scalp Worker starting...\n"
             f"   Current BTC price: ${self._btc_price:,.0f}\n"
             f"   Scanning for near-expiry markets every 5s\n"
-            f"   Paper trading only — ENABLE_LIVE_TRADING=false"
+            f"   Paper trading only — ENABLE_LIVE_TRADING=false",
+            flush=True,
         )
 
         last_resolution_check = datetime.now(UTC)
@@ -457,7 +459,8 @@ def btc_scalp_backtest() -> None:
         f"   Total signals:       {signals}\n"
         f"   Avg edge:            {avg_edge:.1f}¢\n"
         f"   Est. win rate:       {win_rate:.1f}%\n"
-        f"   Est. PnL @$2/trade:  ${total_pnl:.2f}\n"
+        f"   Est. PnL @$2/trade:  ${total_pnl:.2f}\n",
+        flush=True,
     )
 
 

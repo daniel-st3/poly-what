@@ -1460,6 +1460,10 @@ def send_daily_telegram_command() -> None:
 def run_btc_scalp_command() -> None:
     """⚡ Continuous BTC intraday scalp worker — deploy on Railway."""
     import asyncio
+    import sys
+
+    print(f"Python {sys.version} — starting up", flush=True)
+    print("⚡ run-btc-scalp entrypoint reached", flush=True)
 
     from watchdog.strategies.btc_scalp import BtcScalpStrategy
 
