@@ -27,7 +27,7 @@ import websockets
 
 from watchdog.core.config import get_settings
 from watchdog.db.init import init_db
-from watchdog.db.models import Market, Trade
+from watchdog.db.models import BtcSignalLog, Market, Trade
 from watchdog.db.session import build_engine, build_session_factory
 
 LOGGER = logging.getLogger(__name__)
@@ -305,6 +305,23 @@ class BtcScalpStrategy:
             )
 
             with session_factory() as session:
+                # ── Signal audit log ────────────────────────────────────────
+                session.add(BtcSignalLog(
+                    logged_at=now,
+                    market_slug=slug,
+                    question=question,
+                    side=side,
+                    edge=edge,
+                    time_left_min=minutes_left,
+                    our_estimate=our_prob,
+                    market_price=market_price,
+                    momentum=self._get_momentum(),
+                    btc_price=btc,
+                    liquidity=liquidity,
+                    outcome=None,
+                ))
+                session.flush()
+
                 market_row = session.query(Market).filter_by(slug=slug).first()
                 if market_row is None:
                     market_row = Market(
@@ -446,6 +463,26 @@ class BtcScalpStrategy:
                         trade.side,
                         outcome,
                         pnl,
+                    )
+
+                # Fill outcome into signal log rows for this market
+                result_str = "WIN" if exit_price >= 1.0 else "LOSS"
+                pending_logs = (
+                    session.query(BtcSignalLog)
+                    .filter(
+                        BtcSignalLog.market_slug == market.slug,
+                        BtcSignalLog.outcome.is_(None),
+                    )
+                    .all()
+                )
+                for log_row in pending_logs:
+                    log_row.outcome = result_str
+                if pending_logs:
+                    LOGGER.info(
+                        "BTC SCALP: filled %d signal log rows for %s → %s",
+                        len(pending_logs),
+                        market.slug,
+                        result_str,
                     )
 
             session.commit()

@@ -262,3 +262,28 @@ class PortfolioSnapshot(Base):
     total_return_pct: Mapped[float] = mapped_column(Float)
     drawdown_pct: Mapped[float] = mapped_column(Float)
     trades_today: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class BtcSignalLog(Base):
+    """Per-signal audit log for btc-updown paper trades.
+
+    outcome is NULL until the market resolves, then set to 'WIN' or 'LOSS'
+    by _check_resolutions(). After ~20-30 rows you can query win rate by
+    momentum threshold, time_left bucket, or edge size.
+    """
+
+    __tablename__ = "btc_signal_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    logged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    market_slug: Mapped[str] = mapped_column(String(255), index=True)
+    question: Mapped[str] = mapped_column(Text)
+    side: Mapped[str] = mapped_column(String(16))          # 'Up' or 'Down'
+    edge: Mapped[float] = mapped_column(Float)
+    time_left_min: Mapped[float] = mapped_column(Float)    # minutes until expiry at signal time
+    our_estimate: Mapped[float] = mapped_column(Float)     # our_prob
+    market_price: Mapped[float] = mapped_column(Float)     # market's implied prob
+    momentum: Mapped[float] = mapped_column(Float)         # _get_momentum() value
+    btc_price: Mapped[float] = mapped_column(Float)        # BTC/USD at signal time
+    liquidity: Mapped[float] = mapped_column(Float, default=0.0)
+    outcome: Mapped[str | None] = mapped_column(String(8), nullable=True)  # 'WIN'/'LOSS'/NULL
