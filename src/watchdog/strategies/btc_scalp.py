@@ -300,6 +300,7 @@ class BtcScalpStrategy:
                 f"Market price: {market_price:.2f}\n"
                 f"Our estimate: {our_prob:.2f}\n"
                 f"Liquidity: ${liquidity:,.0f}\n"
+                f"Time left: {minutes_left:.1f} min\n"
                 f"Expires: {end_date_str}"
             )
 
