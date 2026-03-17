@@ -141,6 +141,7 @@ class IntraEventArbScanner:
         # Reject non-exclusive outcome bundles (e.g. "who wins the NHL championship"
         # with 32 teams — sum legitimately exceeds 1 and is not a real arb).
         if yes_sum > MAX_YES_SUM:
+            LOGGER.debug("ARB SCAN: rejected %s sum_yes=%.2f (> MAX_YES_SUM %.2f)", event_slug, yes_sum, MAX_YES_SUM)
             return None
 
         # Determine arb type
