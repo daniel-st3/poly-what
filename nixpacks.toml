@@ -1,8 +1,11 @@
 [phases.setup]
-nixPkgs = ["python311", "gcc"]
+nixPkgs = ["python311"]
 
 [phases.install]
-cmds = ["pip install -e ."]
+cmds = [
+  "python -m ensurepip --upgrade",
+  "python -m pip install -e ."
+]
 
 [start]
 cmd = "python -m watchdog run-btc-scalp"
