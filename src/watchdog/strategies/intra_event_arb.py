@@ -29,7 +29,9 @@ MIN_EVENT_VOLUME_USD = 50_000.0
 MIN_PROFIT_CENTS = 5.0
 UNDERPRICED_THRESHOLD = 0.97
 OVERPRICED_THRESHOLD = 1.03
-MAX_YES_SUM = 1.10
+MAX_YES_SUM = 1.10   # rejects overpriced bundles (e.g. NHL champion with 32 teams)
+MIN_YES_SUM = 0.85   # rejects underpriced bundles (too many outcomes to fill simultaneously)
+MAX_OUTCOMES_PER_EVENT = 4  # rejects bracket markets with 10-30 outcome legs
 
 
 class IntraEventArbScanner:
@@ -113,6 +115,10 @@ class IntraEventArbScanner:
         if len(markets) < 2:
             return None
 
+        if len(markets) > MAX_OUTCOMES_PER_EVENT:
+            LOGGER.debug("ARB SCAN: rejected %s: %d outcomes exceeds max %d", event_slug, len(markets), MAX_OUTCOMES_PER_EVENT)
+            return None
+
         # Sum YES outcome prices
         yes_prices: list[float] = []
         total_volume = 0.0
@@ -142,6 +148,10 @@ class IntraEventArbScanner:
         # with 32 teams — sum legitimately exceeds 1 and is not a real arb).
         if yes_sum > MAX_YES_SUM:
             LOGGER.debug("ARB SCAN: rejected %s sum_yes=%.2f (> MAX_YES_SUM %.2f)", event_slug, yes_sum, MAX_YES_SUM)
+            return None
+
+        if yes_sum < MIN_YES_SUM:
+            LOGGER.debug("ARB SCAN: rejected %s sum_yes=%.2f (< MIN_YES_SUM %.2f)", event_slug, yes_sum, MIN_YES_SUM)
             return None
 
         # Determine arb type
