@@ -160,7 +160,7 @@ class BtcScalpStrategy:
         now = datetime.now(UTC)
         cutoff = now + timedelta(minutes=NEAR_EXPIRY_MINUTES)
 
-        params = {"tag": "crypto", "active": "true", "closed": "false"}
+        params = {"active": "true", "closed": "false", "limit": "50", "keyword": "bitcoin"}
         print(f"[DEBUG] Querying Gamma with params: {params}", flush=True)
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
@@ -175,16 +175,46 @@ class BtcScalpStrategy:
         if markets:
             print(f"[DEBUG] Raw market sample: {markets[0]}", flush=True)
 
+        # Keep only price-strike markets expiring within 30 minutes
+        STRIKE_KEYWORDS = ("above", "below", "higher than", "reach")
+        NEAR_EXPIRY_FILTER_MINUTES = 30
+
+        def _minutes_until(end_date_str: str | None) -> float:
+            if not end_date_str:
+                return float("inf")
+            try:
+                end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                if end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=UTC)
+                return (end_dt - now).total_seconds() / 60
+            except ValueError:
+                return float("inf")
+
+        btc_strike_markets = [
+            m for m in markets
+            if any(kw in (m.get("question") or "").lower() for kw in STRIKE_KEYWORDS)
+            and _minutes_until(m.get("endDateIso") or m.get("end_date_iso")) <= NEAR_EXPIRY_FILTER_MINUTES
+        ]
+
+        if len(btc_strike_markets) == 0:
+            print(
+                f"[BTC Scalp] No near-expiry BTC strike markets found this cycle (total markets returned: {len(markets)})",
+                flush=True,
+            )
+        else:
+            print(
+                f"[BTC Scalp] BTC strike markets expiring <{NEAR_EXPIRY_FILTER_MINUTES}min: {len(btc_strike_markets)}",
+                flush=True,
+            )
+
         settings = get_settings()
         engine = build_engine(settings)
         init_db(engine)
         session_factory = build_session_factory(engine)
 
         qualified_count = 0
-        for m in markets:
+        for m in btc_strike_markets:
             question = m.get("question") or ""
-            if "BTC" not in question.upper():
-                continue
 
             end_date_str = m.get("endDateIso") or m.get("end_date_iso") or ""
             if not end_date_str:
