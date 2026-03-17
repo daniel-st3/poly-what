@@ -395,6 +395,7 @@ def _prefilter_events(
 
 def run_dual_portfolio_backtest(
     daily_events: dict[date, list[dict[str, Any]]],
+    min_profit_cents: float = 0.0,
 ) -> list[dict[str, Any]]:
     """
     Run the live IntraEventArbScanner with historical_mode=True for each day.
@@ -433,15 +434,27 @@ def run_dual_portfolio_backtest(
         # Apply each opportunity to both portfolios (Fix 3: fixed position sizes)
         day_profit: dict[float, float] = dict.fromkeys(STARTING_CAPITALS, 0.0)
         trades_taken = 0
+        n_below_min = 0   # rejected by --min-profit-cents
+        n_micro = 0       # profit_cents < 5 (always tracked regardless of filter)
 
         for opp in opps:
+            profit_cents = opp["profit_cents"]
+
+            # Track micro-signals for distribution reporting (before any filter)
+            if profit_cents < 5.0:
+                n_micro += 1
+
+            # --min-profit-cents filter
+            if profit_cents < min_profit_cents:
+                n_below_min += 1
+                continue
+
             # Fill uncertainty model — fill decision is the same for both portfolios
             # (it's an external market event, not portfolio-specific).
             if rng.random() >= FILL_RATE:
                 continue  # did not fill — latency/depth miss
 
             trades_taken += 1
-            profit_cents = opp["profit_cents"]
             is_adverse = rng.random() < ADVERSE_MOVE_RATE  # market moved before fill
 
             for cap in STARTING_CAPITALS:
@@ -475,6 +488,8 @@ def run_dual_portfolio_backtest(
                 "trades_taken": trades_taken,
                 "events_filtered_yes_sum": n_filtered_yes_sum,
                 "events_filtered_volume": n_filtered_volume,
+                "n_below_min_profit": n_below_min,
+                "n_micro_signals": n_micro,
                 **{f"profit_{cap}": day_profit[cap] for cap in STARTING_CAPITALS},
                 **{f"balance_{cap}": balances[cap] for cap in STARTING_CAPITALS},
                 **{f"drawdown_{cap}": drawdowns[cap] for cap in STARTING_CAPITALS},
@@ -611,6 +626,12 @@ def main() -> None:
         default=2000,
         help="Max Gamma API events to fetch (split evenly active/closed). Default: 2000.",
     )
+    parser.add_argument(
+        "--min-profit-cents",
+        type=float,
+        default=0.0,
+        help="Reject signals with profit_cents below this threshold. Default: 0 (no filter).",
+    )
     args = parser.parse_args()
 
     MONTHLY_CSV.parent.mkdir(parents=True, exist_ok=True)
@@ -660,7 +681,11 @@ def main() -> None:
 
     # ── Phase 5: Run backtest ─────────────────────────────────────────────────
     print("\n[5/6] Running dual portfolio backtest ($100 / $500) …")
-    daily_records = run_dual_portfolio_backtest(daily_events)
+    if args.min_profit_cents > 0:
+        print(f"  --min-profit-cents={args.min_profit_cents} filter active")
+    daily_records = run_dual_portfolio_backtest(
+        daily_events, min_profit_cents=args.min_profit_cents
+    )
 
     total_opps = sum(r["opportunities"] for r in daily_records)
     days_with_opps = sum(1 for r in daily_records if r["opportunities"] > 0)
@@ -668,6 +693,9 @@ def main() -> None:
     total_filtered_yes_sum = sum(r["events_filtered_yes_sum"] for r in daily_records)
     total_filtered_volume = sum(r["events_filtered_volume"] for r in daily_records)
     total_raw = total_opps + total_filtered_yes_sum + total_filtered_volume
+    total_micro = sum(r["n_micro_signals"] for r in daily_records)
+    total_below_min = sum(r["n_below_min_profit"] for r in daily_records)
+    pct_micro = total_micro / total_opps * 100 if total_opps else 0.0
 
     # ── Phase 6: Aggregate and write output ───────────────────────────────────
     print("\n[6/6] Aggregating monthly results …")
@@ -725,6 +753,11 @@ def main() -> None:
     print(f"  Fill model:       {FILL_RATE*100:.0f}% fill rate → {total_filled}/{total_sigs} filled  |  "
           f"{ADVERSE_MOVE_RATE*100:.0f}% adverse ({ADVERSE_MOVE_LOSS*100:.0f}% loss)  |  "
           f"{TRANSACTION_COST_RATE*100:.4f}% tx cost  (seed={BACKTEST_SEED})")
+    print(f"\n  Profit distribution (of {total_opps} signals after yes_sum + volume filters):")
+    print(f"    Micro (<5¢):     {total_micro:>5} ({pct_micro:.1f}%)")
+    print(f"    Viable (≥5¢):    {total_opps - total_micro:>5} ({100-pct_micro:.1f}%)")
+    if total_below_min > 0:
+        print(f"    Filtered by --min-profit-cents {args.min_profit_cents}¢: {total_below_min}")
     print(f"\n  Monthly CSV → {MONTHLY_CSV}")
 
 
