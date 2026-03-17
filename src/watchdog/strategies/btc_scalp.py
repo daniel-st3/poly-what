@@ -160,52 +160,79 @@ class BtcScalpStrategy:
         now = datetime.now(UTC)
         cutoff = now + timedelta(minutes=NEAR_EXPIRY_MINUTES)
 
-        params = {"active": "true", "closed": "false", "limit": "50", "keyword": "bitcoin"}
-        print(f"[DEBUG] Querying Gamma with params: {params}", flush=True)
-        try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.get(f"{GAMMA_API_BASE}/markets", params=params)
-            if resp.status_code != 200:
-                return
-            markets: list[dict[str, Any]] = resp.json()
-        except Exception as exc:
-            LOGGER.warning("Gamma API poll failed: %s", exc)
-            return
+        BTC_KEYWORDS = ("btc", "bitcoin", "above $", "below $", "up or down")
+        STRIKE_KEYWORDS = ("above", "below", "up or down", "higher", "lower")
+        end_date_max = (now + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        if markets:
-            print(f"[DEBUG] Raw market sample: {markets[0]}", flush=True)
-
-        # Keep only price-strike markets expiring within 30 minutes
-        STRIKE_KEYWORDS = ("above", "below", "higher than", "reach")
-        NEAR_EXPIRY_FILTER_MINUTES = 30
-
-        def _minutes_until(end_date_str: str | None) -> float:
-            if not end_date_str:
-                return float("inf")
+        async def _fetch_markets(params: dict[str, Any]) -> list[dict[str, Any]]:
             try:
-                end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
-                if end_dt.tzinfo is None:
-                    end_dt = end_dt.replace(tzinfo=UTC)
-                return (end_dt - now).total_seconds() / 60
-            except ValueError:
-                return float("inf")
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    resp = await client.get(f"{GAMMA_API_BASE}/markets", params=params)
+                if resp.status_code != 200:
+                    LOGGER.warning("Gamma API returned %d", resp.status_code)
+                    return []
+                return resp.json()
+            except Exception as exc:
+                LOGGER.warning("Gamma API poll failed: %s", exc)
+                return []
 
-        btc_strike_markets = [
+        # Primary query: soonest-expiring active markets within next 2 hours
+        primary_params: dict[str, Any] = {
+            "active": "true",
+            "closed": "false",
+            "archived": "false",
+            "limit": "100",
+            "order": "end_date",
+            "ascending": "true",
+            "end_date_max": end_date_max,
+            "liquidity_num_min": "100",
+        }
+        print(f"[DEBUG] Querying Gamma with params: {primary_params}", flush=True)
+        markets = await _fetch_markets(primary_params)
+
+        btc_markets = [
             m for m in markets
-            if any(kw in (m.get("question") or "").lower() for kw in STRIKE_KEYWORDS)
-            and _minutes_until(m.get("endDateIso") or m.get("end_date_iso")) <= NEAR_EXPIRY_FILTER_MINUTES
+            if any(kw in (m.get("question") or "").lower() for kw in BTC_KEYWORDS)
+            and any(kw in (m.get("question") or "").lower() for kw in STRIKE_KEYWORDS)
         ]
+        print(
+            f"[BTC Scalp] Total markets fetched: {len(markets)} | BTC strike: {len(btc_markets)}",
+            flush=True,
+        )
+        if btc_markets:
+            print(
+                f"[DEBUG] First BTC market: {btc_markets[0].get('question')} | endDate: {btc_markets[0].get('endDate')}",
+                flush=True,
+            )
 
-        if len(btc_strike_markets) == 0:
+        # Fallback: slug-contains search if primary found nothing
+        if not btc_markets:
+            fallback_params: dict[str, Any] = {
+                "active": "true",
+                "closed": "false",
+                "limit": "50",
+                "slug_contains": "btc",
+            }
+            print(f"[DEBUG] Primary returned 0 BTC markets — trying fallback: {fallback_params}", flush=True)
+            fallback_markets = await _fetch_markets(fallback_params)
+            btc_markets = [
+                m for m in fallback_markets
+                if any(kw in (m.get("question") or "").lower() for kw in STRIKE_KEYWORDS)
+            ]
+            print(f"[BTC Scalp] Fallback BTC strike markets: {len(btc_markets)}", flush=True)
+            if fallback_markets and not btc_markets:
+                # Show what the fallback did return so we can tune further
+                print(
+                    f"[DEBUG] Fallback sample: {fallback_markets[0].get('question')} | slug: {fallback_markets[0].get('slug')}",
+                    flush=True,
+                )
+
+        if not btc_markets:
             print(
-                f"[BTC Scalp] No near-expiry BTC strike markets found this cycle (total markets returned: {len(markets)})",
+                f"[BTC Scalp] No near-expiry BTC strike markets found this cycle",
                 flush=True,
             )
-        else:
-            print(
-                f"[BTC Scalp] BTC strike markets expiring <{NEAR_EXPIRY_FILTER_MINUTES}min: {len(btc_strike_markets)}",
-                flush=True,
-            )
+            return
 
         settings = get_settings()
         engine = build_engine(settings)
@@ -213,7 +240,7 @@ class BtcScalpStrategy:
         session_factory = build_session_factory(engine)
 
         qualified_count = 0
-        for m in btc_strike_markets:
+        for m in btc_markets:
             question = m.get("question") or ""
 
             end_date_str = m.get("endDateIso") or m.get("end_date_iso") or ""
@@ -313,7 +340,7 @@ class BtcScalpStrategy:
                 )
 
         print(
-            f"[BTC Scalp] Scanning... BTC=${btc:,.0f} | Markets found: {len(markets)} | Qualified: {qualified_count}",
+            f"[BTC Scalp] Scan done — BTC=${btc:,.0f} | BTC strike markets: {len(btc_markets)} | Signals fired: {qualified_count}",
             flush=True,
         )
 
