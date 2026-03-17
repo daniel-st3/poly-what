@@ -50,6 +50,14 @@ class BtcScalpStrategy:
         self._trades_opened: int = 0
         self._trades_closed: int = 0
         self._pnl: float = 0.0
+        _s = get_settings()
+        self._tg_token: str | None = _s.telegram_bot_token
+        self._tg_chat: str | None = _s.telegram_chat_id
+
+    def _notify(self, msg: str) -> None:
+        """Fire-and-forget Telegram notification (sync, swallows errors)."""
+        from watchdog.notifications.telegram import send_telegram
+        send_telegram(msg, self._tg_token, self._tg_chat)
 
     # ── Price feed ─────────────────────────────────────────────────────────
 
@@ -201,13 +209,20 @@ class BtcScalpStrategy:
                 continue
 
             self._signals += 1
+            minutes_left = (end_dt - now).total_seconds() / 60
+            slug = m.get("slug") or m.get("conditionId") or f"btc-scalp-{int(now.timestamp())}"
             print(
                 f"⚡ SIGNAL | BTC=${btc:,.0f} | strike=${strike:,.0f} | "
                 f"score={score:.2f} | ask={best_ask:.2f} | edge={edge * 100:.1f}¢ | side={side}",
                 flush=True,
             )
-
-            slug = m.get("slug") or m.get("conditionId") or f"btc-scalp-{int(now.timestamp())}"
+            self._notify(
+                f"⚡ BTC SIGNAL\n"
+                f"BTC: ${btc:,.0f} | Strike: ${strike:,.0f}\n"
+                f"Side: {side} | Edge: {edge * 100:.1f}¢ | Ask: {best_ask:.2f}\n"
+                f"Market: {slug}\n"
+                f"Expires: {minutes_left:.0f}min"
+            )
 
             with session_factory() as session:
                 market_row = session.query(Market).filter_by(slug=slug).first()
@@ -359,6 +374,12 @@ class BtcScalpStrategy:
             f"   Scanning for near-expiry markets every 5s\n"
             f"   Paper trading only — ENABLE_LIVE_TRADING=false",
             flush=True,
+        )
+        self._notify(
+            f"⚡ BTC Scalp Worker online 🟢\n"
+            f"BTC: ${self._btc_price:,.0f}\n"
+            f"Scanning Polymarket every 5s\n"
+            f"Paper mode: ON"
         )
 
         last_resolution_check = datetime.now(UTC)

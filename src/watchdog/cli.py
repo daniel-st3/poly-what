@@ -1465,7 +1465,15 @@ def run_btc_scalp_command() -> None:
     print(f"Python {sys.version} — starting up", flush=True)
     print("⚡ run-btc-scalp entrypoint reached", flush=True)
 
+    from watchdog.notifications.telegram import send_telegram
     from watchdog.strategies.btc_scalp import BtcScalpStrategy
+
+    settings = get_settings()
+    send_telegram(
+        "⚡ BTC Scalp Worker booting on Railway 🚀\nConnecting to Coinbase price feed...",
+        settings.telegram_bot_token,
+        settings.telegram_chat_id,
+    )
 
     strategy = BtcScalpStrategy()
     try:
