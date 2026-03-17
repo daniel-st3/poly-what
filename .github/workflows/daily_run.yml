@@ -7,6 +7,7 @@ on:
     - cron: '0 17 * * 1-6' # 12pm Colombia (UTC-5) — Mon–Sat (Sun handled by weekly cron below)
     - cron: '0 21 * * *'   # 4pm Colombia (UTC-5) — daily
     - cron: '0 17 * * 0'   # Sunday 12pm Colombia (UTC-5) — weekly summary
+    - cron: '0 0 * * *'    # midnight UTC — EOD summary
   workflow_dispatch:
 
 env:
@@ -150,6 +151,47 @@ jobs:
           git add db/seed_data.sql
           git diff --staged --quiet || git commit -m "[skip ci] update seed $(date -u +'%Y-%m-%dT%H:%M')"
           git push || true
+
+  # ── EOD summary — fires at midnight UTC (7pm Colombia) ──────────────────
+  eod-summary:
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 0 * * *'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Download previous DB artifact
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: daily_run.yml
+          name: watchdog-db
+          path: /home/runner/work/poly-what/poly-what/
+          if_no_artifact_found: ignore
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restore DB
+        run: |
+          if [ -f watchdog-db/watchdog.db ]; then
+            mv watchdog-db/watchdog.db watchdog.db
+            echo "✅ DB restored for EOD summary"
+          else
+            echo "⚠️ No artifact — EOD summary will show zeros"
+          fi
+
+      - name: Init DB
+        run: watchdog init-db
+
+      - name: Send EOD summary
+        run: watchdog send-eod-summary
 
   # ── Weekly summary — fires only on Sundays at 17:00 UTC (12pm Colombia) ──
   weekly-summary:

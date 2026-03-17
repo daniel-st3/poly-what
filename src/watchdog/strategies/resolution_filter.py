@@ -19,9 +19,12 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 from sqlalchemy.orm import Session
 
 from watchdog.db.models import Market, Trade
+
+GAMMA_API_BASE = "https://gamma-api.polymarket.com"
 
 LOGGER = logging.getLogger(__name__)
 
@@ -192,3 +195,105 @@ class ResolutionProximityFilter:
         trade.size = half_size
         if trade.remaining_fraction is not None:
             trade.remaining_fraction = trade.remaining_fraction * 0.5
+
+    def check_resolved_markets(self, session: Session) -> dict[str, Any]:
+        """Close open paper trades for markets that have actually resolved (outcome known).
+
+        For each open paper trade:
+          - Checks Market.resolution_outcome first (may already be set by sync-markets)
+          - Falls back to Gamma API via condition_id if not set
+          - YES resolution: YES-side exits at 1.0 (profit), NO-side exits at 0.0 (loss)
+          - NO  resolution: NO-side exits at 1.0 (profit), YES-side exits at 0.0 (loss)
+
+        PnL is written to Trade.pnl and picked up automatically by the net_pnl sum in
+        send-daily-telegram (it is a closed non-arb trade).
+        """
+        print("\n⏰ RESOLUTION CLOSE CHECK")
+
+        open_trades = (
+            session.query(Trade)
+            .filter(Trade.status == "open", Trade.is_paper.is_(True))
+            .all()
+        )
+
+        if not open_trades:
+            print("⏰ RESOLUTION CLOSE CHECK done: no open trades")
+            return {"resolved_trades": 0, "resolution_pnl": 0.0}
+
+        market_ids = {t.market_id for t in open_trades}
+        now = datetime.now(UTC)
+        resolved_count = 0
+        resolution_pnl = 0.0
+
+        for market_id in market_ids:
+            market: Market | None = session.get(Market, market_id)
+            if market is None:
+                continue
+
+            # 1. Use resolution_outcome already stored on the Market row
+            outcome = (market.resolution_outcome or "").upper()
+
+            # 2. If unknown, ask Gamma API
+            if outcome not in ("YES", "NO") and market.condition_id:
+                try:
+                    resp = httpx.get(
+                        f"{GAMMA_API_BASE}/markets",
+                        params={"conditionId": market.condition_id},
+                        timeout=10.0,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        items = data if isinstance(data, list) else [data]
+                        for item in items:
+                            if item.get("resolved"):
+                                raw = (item.get("resolutionOutcome") or "").upper()
+                                if raw in ("YES", "NO"):
+                                    outcome = raw
+                                    market.resolution_outcome = outcome
+                                    market.status = "resolved"
+                                    break
+                except Exception as exc:
+                    LOGGER.warning(
+                        "RESOLUTION CLOSE: Gamma API failed for %s — %s",
+                        market.slug,
+                        exc,
+                    )
+
+            if outcome not in ("YES", "NO"):
+                continue
+
+            # Close every open trade for this market with correct PnL
+            for trade in open_trades:
+                if trade.market_id != market_id:
+                    continue
+                if trade.side == "YES":
+                    exit_price = 1.0 if outcome == "YES" else 0.0
+                else:  # side == "NO"
+                    exit_price = 1.0 if outcome == "NO" else 0.0
+
+                pnl = (exit_price - trade.entry_price) * trade.size
+                trade.exit_price = exit_price
+                trade.pnl = pnl
+                trade.status = "closed"
+                trade.closed_at = now
+                trade.close_reason = "resolution"
+                resolution_pnl += pnl
+                resolved_count += 1
+                LOGGER.info(
+                    "RESOLUTION CLOSE: trade #%d %s side=%s outcome=%s pnl=%.4f",
+                    trade.id,
+                    market.slug,
+                    trade.side,
+                    outcome,
+                    pnl,
+                )
+
+        if resolved_count > 0:
+            session.commit()
+
+        sign = "+" if resolution_pnl >= 0 else ""
+        print(
+            f"⏰ RESOLUTION CLOSE CHECK done: {resolved_count} trade(s) closed, "
+            f"PnL {sign}${resolution_pnl:.4f}"
+        )
+        return {"resolved_trades": resolved_count, "resolution_pnl": resolution_pnl}

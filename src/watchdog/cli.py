@@ -867,6 +867,7 @@ def run_resolution_check_command() -> None:
 
         resolution_filter = ResolutionProximityFilter()
         resolution_filter.run(session, current_prices, is_paper=True)
+        resolution_filter.check_resolved_markets(session)
 
 
 @app.command("run-whale-watch")
@@ -1045,6 +1046,124 @@ def test_telegram_command() -> None:
     typer.echo("✅ Weekly sample message sent")
 
 
+@app.command("send-eod-summary")
+def send_eod_summary_command() -> None:
+    """📋 Send end-of-day summary to Telegram (designed for midnight UTC cron)."""
+    from datetime import UTC, datetime
+
+    from watchdog.backtest.portfolio import get_current_portfolios
+    from watchdog.db.init import init_db
+    from watchdog.db.models import ArbOpportunity, EnsembleSignal, OFISignal, Trade, WhaleActivity
+    from watchdog.notifications.telegram import send_telegram
+
+    settings = get_settings()
+    configure_logging(settings)
+    engine = build_engine(settings)
+    init_db(engine)
+    session_factory = build_session_factory(engine)
+
+    today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    date_str = today_start.strftime("%Y-%m-%d")
+
+    with session_factory() as session:
+        arb_count = (
+            session.query(ArbOpportunity)
+            .filter(ArbOpportunity.timestamp >= today_start)
+            .count()
+        ) or 0
+        arb_trades = (
+            session.query(Trade)
+            .filter(
+                Trade.strategy == "intra_event_arb",
+                Trade.is_paper.is_(True),
+                Trade.opened_at >= today_start,
+            )
+            .count()
+        ) or 0
+
+        ofi_bullish = (
+            session.query(OFISignal)
+            .filter(OFISignal.scanned_at >= today_start, OFISignal.signal == "OFI_BULLISH")
+            .count()
+        ) or 0
+        ofi_bearish = (
+            session.query(OFISignal)
+            .filter(OFISignal.scanned_at >= today_start, OFISignal.signal == "OFI_BEARISH")
+            .count()
+        ) or 0
+        ofi_traded = (
+            session.query(Trade)
+            .filter(
+                Trade.strategy == "ofi_momentum",
+                Trade.is_paper.is_(True),
+                Trade.opened_at >= today_start,
+            )
+            .count()
+        ) or 0
+
+        ens_divs = (
+            session.query(EnsembleSignal)
+            .filter(EnsembleSignal.scanned_at >= today_start, EnsembleSignal.divergence > 0.05)
+            .count()
+        ) or 0
+
+        whale_signals = (
+            session.query(WhaleActivity)
+            .filter(
+                WhaleActivity.timestamp >= today_start,
+                WhaleActivity.whale_signal == "large_position",
+            )
+            .count()
+        ) or 0
+
+        # PnL today from closed non-arb trades
+        _arb_strats = {"intra_event_arb", "pair_cost_arb"}
+        today_closed = (
+            session.query(Trade)
+            .filter(
+                Trade.status == "closed",
+                Trade.is_paper.is_(True),
+                Trade.closed_at >= today_start,
+            )
+            .all()
+        )
+        pnl_today = sum(
+            (t.pnl or 0.0) for t in today_closed
+            if (t.strategy or "") not in _arb_strats
+        )
+
+        portfolios = get_current_portfolios(session)
+
+    p100 = portfolios.get(100.0)
+    p500 = portfolios.get(500.0)
+
+    def _pnl(v: float) -> str:
+        return f"{'+' if v >= 0 else ''}${v:.2f}"
+
+    balance_line = (
+        f"💼 $100: ${p100.current_balance:,.2f}  ({p100.total_return_pct:+.1f}%)\n"
+        f"   $500: ${p500.current_balance:,.2f}  ({p500.total_return_pct:+.1f}%)\n"
+        f"🔻 Peak drawdown: -{max(p100.drawdown_pct, p500.drawdown_pct):.1f}%"
+    ) if p100 and p500 else "💼 Portfolio data unavailable"
+
+    msg = (
+        f"📋 END OF DAY SUMMARY — {date_str}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 Signals today:\n"
+        f"   ARB:      {arb_count} opps scanned, {arb_trades} trades placed\n"
+        f"   OFI:      {ofi_bullish} bullish, {ofi_bearish} bearish, {ofi_traded} traded\n"
+        f"   ENSEMBLE: {ens_divs} divergences\n"
+        f"   WHALES:   {'10+' if whale_signals > 10 else whale_signals} signals\n"
+        f"\n"
+        f"💰 PnL today:    {_pnl(pnl_today)}\n"
+        f"{balance_line}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━"
+    )
+
+    send_telegram(msg, settings.telegram_bot_token, settings.telegram_chat_id)
+    typer.echo(msg)
+
+
 @app.command("send-daily-telegram")
 def send_daily_telegram_command() -> None:
     """Send formatted daily summary to Telegram."""
@@ -1052,7 +1171,15 @@ def send_daily_telegram_command() -> None:
 
     from watchdog.backtest.portfolio import count_runs_today, update_portfolios
     from watchdog.db.init import init_db
-    from watchdog.db.models import ArbOpportunity, EnsembleSignal, OFISignal, Trade, WhaleActivity
+    from watchdog.db.models import (
+        ArbOpportunity,
+        EnsembleSignal,
+        Market,
+        OFISignal,
+        PortfolioSnapshot,
+        Trade,
+        WhaleActivity,
+    )
     from watchdog.notifications.telegram import send_telegram
 
     settings = get_settings()
@@ -1090,6 +1217,29 @@ def send_daily_telegram_command() -> None:
             .count()
         ) or 0
 
+        # OFI paper trade stats today
+        ofi_trades_opened = (
+            session.query(Trade)
+            .filter(
+                Trade.strategy == "ofi_momentum",
+                Trade.is_paper.is_(True),
+                Trade.opened_at >= today_start,
+            )
+            .count()
+        ) or 0
+        ofi_closed_today = (
+            session.query(Trade)
+            .filter(
+                Trade.strategy == "ofi_momentum",
+                Trade.is_paper.is_(True),
+                Trade.status == "closed",
+                Trade.closed_at >= today_start,
+            )
+            .all()
+        )
+        ofi_trades_closed = len(ofi_closed_today)
+        ofi_trade_pnl = sum((t.pnl or 0.0) for t in ofi_closed_today)
+
         # Ensemble divergences today
         ens_divs = (
             session.query(EnsembleSignal)
@@ -1107,15 +1257,29 @@ def send_daily_telegram_command() -> None:
             .count()
         ) or 0
 
-        # Resolution flags today
+        # Resolution flags today (proximity closes + actual outcome closes)
         resolution_flagged = (
             session.query(Trade)
             .filter(
                 Trade.closed_at >= today_start,
-                Trade.close_reason.in_(["resolution_near_certain", "resolution_high_risk_partial"]),
+                Trade.close_reason.in_([
+                    "resolution_near_certain",
+                    "resolution_high_risk_partial",
+                    "resolution",
+                ]),
             )
             .count()
         ) or 0
+
+        # Resolution PnL today (actual outcome closes only)
+        resolution_pnl_today = sum(
+            (t.pnl or 0.0)
+            for t in session.query(Trade).filter(
+                Trade.closed_at >= today_start,
+                Trade.close_reason == "resolution",
+                Trade.is_paper.is_(True),
+            ).all()
+        )
 
         # Net realized PnL (core, non-arb closed trades)
         _arb_strats = {"intra_event_arb", "pair_cost_arb"}
@@ -1130,9 +1294,62 @@ def send_daily_telegram_command() -> None:
             if (t.strategy or "") not in _arb_strats
         )
 
+        # Confidence scores: ARB=30, OFI=25, ENSEMBLE=25, WHALE=20 per market slug
+        confidence: dict[str, int] = {}
+
+        for row in session.query(ArbOpportunity).filter(ArbOpportunity.timestamp >= today_start).all():
+            slug = row.event_slug or ""
+            if slug:
+                confidence[slug] = confidence.get(slug, 0) + 30
+
+        for row in session.query(OFISignal).filter(
+            OFISignal.scanned_at >= today_start,
+            OFISignal.signal != "neutral",
+        ).all():
+            mkt = session.get(Market, row.market_id) if row.market_id else None
+            slug = (mkt.slug if mkt else None) or ""
+            if slug:
+                confidence[slug] = confidence.get(slug, 0) + 25
+
+        for row in session.query(EnsembleSignal).filter(
+            EnsembleSignal.scanned_at >= today_start,
+            EnsembleSignal.divergence > 0.05,
+        ).all():
+            mkt = session.get(Market, row.market_id) if row.market_id else None
+            slug = (mkt.slug if mkt else None) or ""
+            if slug:
+                confidence[slug] = confidence.get(slug, 0) + 25
+
+        for row in session.query(WhaleActivity).filter(
+            WhaleActivity.timestamp >= today_start,
+            WhaleActivity.whale_signal == "large_position",
+        ).all():
+            slug = row.market_slug or ""
+            if slug:
+                confidence[slug] = confidence.get(slug, 0) + 20
+
+        top_signals = sorted(confidence.items(), key=lambda x: x[1], reverse=True)[:3]
+
         # Portfolio tracker — update both portfolios and get current state
         portfolios = update_portfolios(session)
         run_n = count_runs_today(session)
+
+        # Drawdown alert check (once per drawdown event per day per portfolio)
+        drawdown_threshold_pct = 5.0
+        drawdown_alerts_to_send: list[tuple[float, object]] = []
+        for cap, snap in [(100.0, portfolios.get(100.0)), (500.0, portfolios.get(500.0))]:
+            if snap and snap.drawdown_pct > drawdown_threshold_pct:
+                prev_in_drawdown = (
+                    session.query(PortfolioSnapshot)
+                    .filter(
+                        PortfolioSnapshot.starting_capital == cap,
+                        PortfolioSnapshot.timestamp >= today_start,
+                        PortfolioSnapshot.drawdown_pct > drawdown_threshold_pct,
+                    )
+                    .count()
+                )
+                if prev_in_drawdown <= 1:  # only the one just written → first alert today
+                    drawdown_alerts_to_send.append((cap, snap))
 
     def _pnl_str(pnl: float) -> str:
         if pnl == 0.0:
@@ -1161,19 +1378,43 @@ def send_daily_telegram_command() -> None:
         f"📅 Run {run_n} of 4 today"
     ) if p100 and p500 else ""
 
+    top_signals_block = ""
+    if top_signals:
+        lines = "\n".join(
+            f"   {i+1}. {slug[:40]} — {score}/100"
+            for i, (slug, score) in enumerate(top_signals)
+        )
+        top_signals_block = f"\n🎯 TOP SIGNALS TODAY\n{lines}\n"
+
     msg = (
         f"🤖 poly-agent run complete — {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}\n"
         f"📊 ARB: {arb_count} opps, est ${daily_est_cents / 100:.2f}\n"
         f"📈 OFI: {ofi_bullish} bullish, {ofi_bearish} bearish\n"
+        f"   Trades: {ofi_trades_opened} opened, {ofi_trades_closed} closed"
+        + (f", {'+' if ofi_trade_pnl >= 0 else ''}${ofi_trade_pnl:.2f} PnL" if ofi_trades_closed > 0 else "")
+        + "\n"
         f"🧠 ENSEMBLE: {ens_divs} divergences\n"
         f"🐋 WHALES: {'10+' if whale_signals > 10 else whale_signals} smart money signals\n"
-        f"⏰ RESOLUTION: {resolution_flagged} flagged\n"
+        f"⏰ RESOLUTION: {resolution_flagged} flagged"
+        + (f", PnL {'+' if resolution_pnl_today >= 0 else ''}${resolution_pnl_today:.2f}" if resolution_pnl_today != 0.0 else "")
+        + f"\n"
         f"💰 Net realized PnL: ${net_pnl:.2f}"
+        f"{top_signals_block}"
         f"{portfolio_block}"
     )
 
     send_telegram(msg, settings.telegram_bot_token, settings.telegram_chat_id)
     typer.echo(msg)
+
+    for cap, snap in drawdown_alerts_to_send:
+        alert = (
+            f"🚨 DRAWDOWN ALERT — ${cap:.0f} portfolio\n"
+            f"   Current:  ${snap.current_balance:,.2f}\n"
+            f"   Peak:     ${snap.peak_balance:,.2f}\n"
+            f"   Drawdown: -{snap.drawdown_pct:.1f}% (threshold: 5%)"
+        )
+        send_telegram(alert, settings.telegram_bot_token, settings.telegram_chat_id)
+        typer.echo(alert)
 
 
 @app.command("portfolio-status")

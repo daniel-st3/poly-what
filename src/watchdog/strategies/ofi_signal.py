@@ -36,8 +36,10 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-OFI_DEDUP_MINUTES = 60  # skip re-scan within this window
-OFI_TOP_N_MARKETS = 25  # how many top-volume markets to scan each run
+OFI_DEDUP_MINUTES = 60        # skip re-scan within this window
+OFI_TOP_N_MARKETS = 25        # how many top-volume markets to scan each run
+OFI_MIN_NOTIONAL = 500.0      # minimum |obi_notional| to open a paper trade
+OFI_HOLD_HOURS = 24.0         # close paper trades after this many hours
 GAMMA_API = "https://gamma-api.polymarket.com"
 
 
@@ -141,14 +143,21 @@ class OFIScanner:
         session: Session,
         rest_client: PolymarketRestClient,
     ) -> dict[str, Any]:
-        """Scan top active markets by volume. Persist OFISignal rows. Return summary."""
+        """Scan top active markets by volume. Persist OFISignal rows.
+        Also closes stale OFI paper trades (>24h) and opens new ones for strong signals.
+        Returns summary dict.
+        """
         print("\n📈 OFI SCAN")
+
+        # Close any OFI paper trades older than OFI_HOLD_HOURS before opening new ones
+        close_stats = self.close_stale_ofi_trades(session, rest_client)
 
         market_ids = _top_market_ids(session)
 
         scanned = 0
         bullish = 0
         bearish = 0
+        trades_opened = 0
         now = datetime.now(UTC)
         dedup_cutoff = now - timedelta(minutes=OFI_DEDUP_MINUTES)
 
@@ -190,9 +199,139 @@ class OFIScanner:
             )
             session.add(ofi_row)
 
+            # Open a paper trade if signal is strong and no open OFI trade exists
+            if signal in ("OFI_BULLISH", "OFI_BEARISH") and abs(obi_notional) >= OFI_MIN_NOTIONAL:
+                trades_opened += self._open_paper_trade(
+                    session, market, signal, rest_client, now
+                )
+
         session.commit()
         print(
             f"📈 OFI SCAN done: {scanned} markets scanned, "
-            f"{bullish} bullish, {bearish} bearish"
+            f"{bullish} bullish, {bearish} bearish, "
+            f"{trades_opened} trade(s) opened, {close_stats['closed']} closed"
         )
-        return {"scanned": scanned, "bullish": bullish, "bearish": bearish}
+        return {
+            "scanned": scanned,
+            "bullish": bullish,
+            "bearish": bearish,
+            "trades_opened": trades_opened,
+            "trades_closed": close_stats["closed"],
+            "closed_pnl": close_stats["total_pnl"],
+        }
+
+    def _open_paper_trade(
+        self,
+        session: Session,
+        market: Market,
+        signal: str,
+        rest_client: PolymarketRestClient,
+        now: datetime,
+    ) -> int:
+        """Open one OFI paper trade. Returns 1 if opened, 0 if skipped (dedup)."""
+        # Dedup: skip if an open OFI trade already exists for this market
+        existing = (
+            session.query(Trade)
+            .filter(
+                Trade.market_id == market.id,
+                Trade.strategy == "ofi_momentum",
+                Trade.status == "open",
+                Trade.is_paper.is_(True),
+            )
+            .first()
+        )
+        if existing:
+            return 0
+
+        # Get current mid price as entry price; fall back to 0.50
+        entry_price = 0.50
+        try:
+            book = rest_client.get_orderbook(market.yes_token_id)
+            mid = book.get("mid")
+            if mid is not None:
+                entry_price = float(mid)
+        except Exception:
+            pass
+
+        side = "YES" if signal == "OFI_BULLISH" else "NO"
+        trade = Trade(
+            market_id=market.id,
+            signal_id=None,
+            side=side,
+            size=1.0,
+            entry_price=entry_price,
+            kelly_fraction=0.0,
+            is_paper=True,
+            status="open",
+            opened_at=now,
+            strategy="ofi_momentum",
+            order_id=f"ofi_{market.id}_{int(now.timestamp())}",
+        )
+        session.add(trade)
+        LOGGER.info(
+            "OFI TRADE: opened paper trade %s side=%s entry=%.4f",
+            market.slug,
+            side,
+            entry_price,
+        )
+        return 1
+
+    def close_stale_ofi_trades(
+        self,
+        session: Session,
+        rest_client: PolymarketRestClient,
+        max_age_hours: float = OFI_HOLD_HOURS,
+    ) -> dict[str, Any]:
+        """Close all open OFI paper trades older than max_age_hours at current market price."""
+        cutoff = datetime.now(UTC) - timedelta(hours=max_age_hours)
+        stale = (
+            session.query(Trade)
+            .filter(
+                Trade.strategy == "ofi_momentum",
+                Trade.status == "open",
+                Trade.is_paper.is_(True),
+                Trade.opened_at <= cutoff,
+            )
+            .all()
+        )
+
+        closed = 0
+        total_pnl = 0.0
+        now = datetime.now(UTC)
+
+        for trade in stale:
+            market: Market | None = session.get(Market, trade.market_id)
+            if market is None:
+                continue
+
+            # Try to get current price; fall back to entry price (break-even)
+            exit_price = trade.entry_price
+            if market.yes_token_id:
+                try:
+                    book = rest_client.get_orderbook(market.yes_token_id)
+                    mid = book.get("mid")
+                    if mid is not None:
+                        raw_mid = float(mid)
+                        exit_price = raw_mid if trade.side == "YES" else (1.0 - raw_mid)
+                except Exception:
+                    pass
+
+            pnl = (exit_price - trade.entry_price) * trade.size
+            trade.exit_price = exit_price
+            trade.pnl = pnl
+            trade.status = "closed"
+            trade.closed_at = now
+            trade.close_reason = "ofi_time_exit"
+            total_pnl += pnl
+            closed += 1
+            LOGGER.info(
+                "OFI TRADE: closed stale trade %s side=%s pnl=%.4f",
+                market.slug,
+                trade.side,
+                pnl,
+            )
+
+        if closed:
+            session.commit()
+
+        return {"closed": closed, "total_pnl": total_pnl}
