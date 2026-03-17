@@ -172,25 +172,27 @@ class BtcScalpStrategy:
             try:
                 async with httpx.AsyncClient(timeout=8.0) as client:
                     resp = await client.get(f"{GAMMA_API_BASE}/markets", params=params)
+                print(
+                    f"[DEBUG] Gamma response status: {resp.status_code} | body[:200]: {resp.text[:200]}",
+                    flush=True,
+                )
                 if resp.status_code != 200:
-                    LOGGER.warning("Gamma API returned %d: %s", resp.status_code, resp.text[:200])
                     return []
                 return resp.json()
             except Exception as exc:
                 LOGGER.warning("Gamma API poll failed: %s", exc)
                 return []
 
-        # Primary query: soonest-expiring active markets (client-side end_date filter)
+        # Primary query — bare minimum valid params only
         primary_params: dict[str, Any] = {
             "active": "true",
             "closed": "false",
             "archived": "false",
             "limit": "100",
-            "order": "end_date_iso",
-            "ascending": "true",
         }
         print(f"[DEBUG] Querying Gamma with params: {primary_params}", flush=True)
         markets = await _fetch_markets(primary_params)
+        markets = sorted(markets, key=lambda m: m.get("endDate", ""), reverse=False)
 
         btc_markets = [
             m for m in markets
@@ -207,24 +209,22 @@ class BtcScalpStrategy:
                 flush=True,
             )
 
-        # Fallback: top-volume active markets, filter BTC client-side
+        # Fallback query — bare minimum, filter BTC client-side
         if not btc_markets:
             fallback_params: dict[str, Any] = {
                 "active": "true",
                 "closed": "false",
                 "limit": "50",
-                "order": "volume_24hr",
-                "ascending": "false",
             }
             print(f"[DEBUG] Primary returned 0 BTC markets — trying fallback: {fallback_params}", flush=True)
             fallback_markets = await _fetch_markets(fallback_params)
+            fallback_markets = sorted(fallback_markets, key=lambda m: m.get("endDate", ""), reverse=False)
             btc_markets = [
                 m for m in fallback_markets
                 if any(kw in (m.get("question") or "").lower() for kw in STRIKE_KEYWORDS)
             ]
             print(f"[BTC Scalp] Fallback BTC strike markets: {len(btc_markets)}", flush=True)
             if fallback_markets and not btc_markets:
-                # Show what the fallback did return so we can tune further
                 print(
                     f"[DEBUG] Fallback sample: {fallback_markets[0].get('question')} | slug: {fallback_markets[0].get('slug')}",
                     flush=True,
