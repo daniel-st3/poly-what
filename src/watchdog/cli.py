@@ -1116,6 +1116,35 @@ def send_eod_summary_command() -> None:
             .count()
         ) or 0
 
+        # BTC scalp stats today
+        btc_signals_today = (
+            session.query(Trade)
+            .filter(
+                Trade.strategy == "btc_scalp",
+                Trade.is_paper.is_(True),
+                Trade.opened_at >= today_start,
+            )
+            .count()
+        ) or 0
+        btc_closed_today = (
+            session.query(Trade)
+            .filter(
+                Trade.strategy == "btc_scalp",
+                Trade.is_paper.is_(True),
+                Trade.status == "closed",
+                Trade.closed_at >= today_start,
+            )
+            .all()
+        )
+        btc_trades_today = len(btc_closed_today)
+        btc_pnl_today = sum((t.pnl or 0.0) for t in btc_closed_today)
+        btc_avg_edge = (
+            sum((t.confidence_score or 0.0) - (t.entry_price or 0.0) for t in btc_closed_today)
+            / btc_trades_today * 100
+            if btc_trades_today > 0
+            else 0.0
+        )
+
         # PnL today from closed non-arb trades
         _arb_strats = {"intra_event_arb", "pair_cost_arb"}
         today_closed = (
@@ -1146,6 +1175,15 @@ def send_eod_summary_command() -> None:
         f"🔻 Peak drawdown: -{max(p100.drawdown_pct, p500.drawdown_pct):.1f}%"
     ) if p100 and p500 else "💼 Portfolio data unavailable"
 
+    btc_scalp_line = (
+        f"⚡ BTC SCALP: {btc_signals_today} signals | "
+        f"{btc_trades_today} trades | "
+        f"${btc_pnl_today:+.2f} paper PnL | "
+        f"avg edge {btc_avg_edge:.0f}¢\n"
+        if btc_signals_today > 0
+        else ""
+    )
+
     msg = (
         f"📋 END OF DAY SUMMARY — {date_str}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1154,6 +1192,7 @@ def send_eod_summary_command() -> None:
         f"   OFI:      {ofi_bullish} bullish, {ofi_bearish} bearish, {ofi_traded} traded\n"
         f"   ENSEMBLE: {ens_divs} divergences\n"
         f"   WHALES:   {'10+' if whale_signals > 10 else whale_signals} signals\n"
+        f"{btc_scalp_line}"
         f"\n"
         f"💰 PnL today:    {_pnl(pnl_today)}\n"
         f"{balance_line}\n"
@@ -1415,6 +1454,25 @@ def send_daily_telegram_command() -> None:
         )
         send_telegram(alert, settings.telegram_bot_token, settings.telegram_chat_id)
         typer.echo(alert)
+
+
+@app.command("run-btc-scalp")
+def run_btc_scalp_command() -> None:
+    """⚡ Continuous BTC intraday scalp worker — deploy on Railway."""
+    import asyncio
+
+    from watchdog.strategies.btc_scalp import BtcScalpStrategy
+
+    strategy = BtcScalpStrategy()
+    try:
+        asyncio.run(strategy.run_forever())
+    except KeyboardInterrupt:
+        summary = strategy.get_summary()
+        typer.echo("\n⚡ BTC Scalp stopped.")
+        typer.echo(f"   Signals found: {summary['signals']}")
+        typer.echo(f"   Trades opened: {summary['trades_opened']}")
+        typer.echo(f"   Trades closed: {summary['trades_closed']}")
+        typer.echo(f"   Net paper PnL: ${summary['pnl']:.2f}")
 
 
 @app.command("portfolio-status")
