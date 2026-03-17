@@ -17,6 +17,7 @@ import logging
 import random
 import re
 import time
+from collections import deque
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -47,6 +48,7 @@ NEAR_EXPIRY_MINUTES = 12
 class BtcScalpStrategy:
     def __init__(self) -> None:
         self._btc_price: float | None = None
+        self._price_history: deque[float] = deque(maxlen=60)
         self._signals: int = 0
         self._trades_opened: int = 0
         self._trades_closed: int = 0
@@ -155,6 +157,43 @@ class BtcScalpStrategy:
             side = "NO"
         return score, side
 
+    def _get_momentum(self) -> float:
+        """Return momentum score -1.0..1.0 from last 60s of BTC prices (5s intervals)."""
+        if len(self._price_history) < 2:
+            return 0.0
+        recent = list(self._price_history)[-12:]  # last ~60s at 5s intervals
+        change = (recent[-1] - recent[0]) / recent[0]
+        return max(-1.0, min(1.0, change * 100))  # scale % change to -1..1
+
+    def _compute_signal(
+        self, market: dict[str, Any]
+    ) -> tuple[str, float, float, float] | None:
+        """Compute Up/Down signal from momentum vs market price.
+
+        Returns (side, edge, our_prob, market_price) or None if no edge.
+        side is 'Up' or 'Down'.
+        """
+        try:
+            outcome_prices = json.loads(market.get("outcomePrices") or '["0.5","0.5"]')
+            up_price = float(outcome_prices[0])
+            down_price = float(outcome_prices[1])
+        except (ValueError, IndexError, TypeError):
+            return None
+
+        momentum = self._get_momentum()
+        our_up_prob = max(0.01, min(0.99, 0.5 + momentum * 0.4))
+        our_down_prob = 1.0 - our_up_prob
+
+        up_edge = our_up_prob - up_price
+        down_edge = our_down_prob - down_price
+
+        MIN_EDGE = 0.06
+        if up_edge > MIN_EDGE:
+            return ("Up", up_edge, our_up_prob, up_price)
+        if down_edge > MIN_EDGE:
+            return ("Down", down_edge, our_down_prob, down_price)
+        return None
+
     # ── Market scanner ──────────────────────────────────────────────────────
 
     async def _scan_markets(self) -> None:
@@ -213,11 +252,18 @@ class BtcScalpStrategy:
         init_db(engine)
         session_factory = build_session_factory(engine)
 
+        # Record current price into history for momentum calculation
+        if self._btc_price is not None:
+            self._price_history.append(self._btc_price)
+
         qualified_count = 0
         for m in btc_markets:
             question = m.get("question") or ""
 
-            end_date_str = m.get("endDateIso") or m.get("end_date_iso") or ""
+            # btc-updown events use "endDate"; fall back to ISO variants
+            end_date_str = (
+                m.get("endDate") or m.get("endDateIso") or m.get("end_date_iso") or ""
+            )
             if not end_date_str:
                 continue
             try:
@@ -230,37 +276,31 @@ class BtcScalpStrategy:
             if end_dt > cutoff or end_dt <= now:
                 continue
 
-            strike = self._extract_strike(question)
-            if strike is None:
+            signal = self._compute_signal(m)
+            if signal is None:
                 continue
 
-            score, side = self._compute_certainty(btc, strike)
-            if score <= CERTAINTY_THRESHOLD:
-                continue
-
-            best_ask = float(m.get("bestAsk") or m.get("best_ask") or 0.50)
-            if best_ask <= 0:
-                best_ask = 0.50
-
-            edge = score - best_ask
-            if edge < EDGE_THRESHOLD:
-                continue
-
+            side, edge, our_prob, market_price = signal
             self._signals += 1
             qualified_count += 1
             minutes_left = (end_dt - now).total_seconds() / 60
             slug = m.get("slug") or m.get("conditionId") or f"btc-scalp-{int(now.timestamp())}"
+            liquidity = float(m.get("liquidity") or 0)
+
             print(
-                f"⚡ SIGNAL | BTC=${btc:,.0f} | strike=${strike:,.0f} | "
-                f"score={score:.2f} | ask={best_ask:.2f} | edge={edge * 100:.1f}¢ | side={side}",
+                f"⚡ UP/DOWN SIGNAL | BTC=${btc:,.0f} | side={side} | "
+                f"edge={edge:.2f} | our={our_prob:.2f} | mkt={market_price:.2f} | "
+                f"liq=${liquidity:,.0f} | expires={minutes_left:.1f}min",
                 flush=True,
             )
             self._notify(
-                f"⚡ BTC SIGNAL\n"
-                f"BTC: ${btc:,.0f} | Strike: ${strike:,.0f}\n"
-                f"Side: {side} | Edge: {edge * 100:.1f}¢ | Ask: {best_ask:.2f}\n"
-                f"Market: {slug}\n"
-                f"Expires: {minutes_left:.0f}min"
+                f"⚡ BTC UP/DOWN SIGNAL\n"
+                f"Market: {question}\n"
+                f"Side: {side} | Edge: {edge:.2f}\n"
+                f"Market price: {market_price:.2f}\n"
+                f"Our estimate: {our_prob:.2f}\n"
+                f"Liquidity: ${liquidity:,.0f}\n"
+                f"Expires: {end_date_str}"
             )
 
             with session_factory() as session:
@@ -293,9 +333,9 @@ class BtcScalpStrategy:
                     signal_id=None,
                     side=side,
                     size=PAPER_POSITION_SIZE,
-                    entry_price=best_ask,
+                    entry_price=market_price,
                     kelly_fraction=0.0,
-                    confidence_score=score,
+                    confidence_score=our_prob,
                     is_paper=True,
                     status="open",
                     opened_at=now,
@@ -306,15 +346,16 @@ class BtcScalpStrategy:
                 session.commit()
                 self._trades_opened += 1
                 LOGGER.info(
-                    "BTC SCALP: paper trade opened %s side=%s entry=%.4f score=%.3f",
+                    "BTC SCALP: paper trade opened %s side=%s entry=%.4f our_prob=%.3f",
                     slug,
                     side,
-                    best_ask,
-                    score,
+                    market_price,
+                    our_prob,
                 )
 
         print(
-            f"[BTC Scalp] Scan done — BTC=${btc:,.0f} | BTC strike markets: {len(btc_markets)} | Signals fired: {qualified_count}",
+            f"[BTC Scalp] Scan done — BTC=${btc:,.0f} | momentum={self._get_momentum():.3f} | "
+            f"markets={len(btc_markets)} | signals={qualified_count}",
             flush=True,
         )
 
