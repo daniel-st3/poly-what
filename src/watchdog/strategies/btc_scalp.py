@@ -50,6 +50,7 @@ class BtcScalpStrategy:
         self._trades_opened: int = 0
         self._trades_closed: int = 0
         self._pnl: float = 0.0
+        self._has_sent_online_ping: bool = False
         _s = get_settings()
         self._tg_token: str | None = _s.telegram_bot_token
         self._tg_chat: str | None = _s.telegram_chat_id
@@ -458,21 +459,28 @@ class BtcScalpStrategy:
             f"   Paper trading only — ENABLE_LIVE_TRADING=false",
             flush=True,
         )
-        self._notify(
-            f"⚡ BTC Scalp Worker online 🟢\n"
-            f"BTC: ${self._btc_price:,.0f}\n"
-            f"Scanning Polymarket every 5s\n"
-            f"Paper mode: ON"
-        )
+        if not self._has_sent_online_ping:
+            self._notify(
+                f"⚡ BTC Scalp Worker online 🟢\n"
+                f"BTC: ${self._btc_price:,.0f}\n"
+                f"Scanning Polymarket every 5s\n"
+                f"Paper mode: ON"
+            )
+            self._has_sent_online_ping = True
 
         last_resolution_check = datetime.now(UTC)
         while True:
-            await self._scan_markets()
+            try:
+                await self._scan_markets()
 
-            elapsed = (datetime.now(UTC) - last_resolution_check).total_seconds()
-            if elapsed >= RESOLUTION_CHECK_INTERVAL_S:
-                await self._check_resolutions()
-                last_resolution_check = datetime.now(UTC)
+                elapsed = (datetime.now(UTC) - last_resolution_check).total_seconds()
+                if elapsed >= RESOLUTION_CHECK_INTERVAL_S:
+                    await self._check_resolutions()
+                    last_resolution_check = datetime.now(UTC)
+            except Exception as exc:
+                print(f"[BTC Scalp] Loop error: {exc} — restarting in 10s", flush=True)
+                await asyncio.sleep(10)
+                continue
 
             await asyncio.sleep(POLL_INTERVAL_S)
 
@@ -485,8 +493,9 @@ class BtcScalpStrategy:
             try:
                 await self._run_loop()
             except Exception as exc:
+                print(f"[BTC Scalp] Loop error: {exc} — restarting in 10s", flush=True)
                 LOGGER.error("BTC scalp loop crashed: %s", exc)
-                await asyncio.sleep(30)
+                await asyncio.sleep(10)
 
         price_task.cancel()  # unreachable but satisfies linters
 
