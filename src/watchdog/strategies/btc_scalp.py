@@ -419,6 +419,7 @@ class BtcScalpStrategy:
             closed_this_run = 0
 
             for market_id in market_ids:
+                exit_price = 0.0
                 market = session.get(Market, market_id)
                 if market is None:
                     continue
@@ -524,47 +525,49 @@ class BtcScalpStrategy:
     # ── Main loop ───────────────────────────────────────────────────────────
 
     async def _run_loop(self) -> None:
-        # Wait up to 10s for initial price
-        for _ in range(20):
-            if self._btc_price is not None:
-                break
-            await asyncio.sleep(0.5)
-
-        if self._btc_price is None:
-            LOGGER.warning("BTC price not available after 10s — skipping scan cycle")
-            return
-
-        print(
-            f"⚡ BTC Scalp Worker starting...\n"
-            f"   Current BTC price: ${self._btc_price:,.0f}\n"
-            f"   Scanning for near-expiry markets every 5s\n"
-            f"   Paper trading only — ENABLE_LIVE_TRADING=false",
-            flush=True,
-        )
-        if not self._has_sent_online_ping:
-            self._notify(
-                f"⚡ BTC Scalp Worker online 🟢\n"
-                f"BTC: ${self._btc_price:,.0f}\n"
-                f"Scanning Polymarket every 5s\n"
-                f"Paper mode: ON"
-            )
-            self._has_sent_online_ping = True
-
-        last_resolution_check = datetime.now(UTC)
         while True:
-            try:
-                await self._scan_markets()
+            # Wait up to 10s for initial price
+            for _ in range(20):
+                if self._btc_price is not None:
+                    break
+                await asyncio.sleep(0.5)
 
-                elapsed = (datetime.now(UTC) - last_resolution_check).total_seconds()
-                if elapsed >= RESOLUTION_CHECK_INTERVAL_S:
-                    await self._check_resolutions()
-                    last_resolution_check = datetime.now(UTC)
-            except Exception as exc:
-                print(f"[BTC Scalp] Loop error: {exc} — restarting in 10s", flush=True)
-                await asyncio.sleep(10)
+            if self._btc_price is None:
+                LOGGER.warning("BTC price not available after 10s — retrying in 15s")
+                await asyncio.sleep(15)
                 continue
 
-            await asyncio.sleep(POLL_INTERVAL_S)
+            print(
+                f"⚡ BTC Scalp Worker starting...\n"
+                f"   Current BTC price: ${self._btc_price:,.0f}\n"
+                f"   Scanning for near-expiry markets every 5s\n"
+                f"   Paper trading only — ENABLE_LIVE_TRADING=false",
+                flush=True,
+            )
+            if not self._has_sent_online_ping:
+                self._notify(
+                    f"⚡ BTC Scalp Worker online 🟢\n"
+                    f"BTC: ${self._btc_price:,.0f}\n"
+                    f"Scanning Polymarket every 5s\n"
+                    f"Paper mode: ON"
+                )
+                self._has_sent_online_ping = True
+
+            last_resolution_check = datetime.now(UTC)
+            while True:
+                try:
+                    await self._scan_markets()
+
+                    elapsed = (datetime.now(UTC) - last_resolution_check).total_seconds()
+                    if elapsed >= RESOLUTION_CHECK_INTERVAL_S:
+                        await self._check_resolutions()
+                        last_resolution_check = datetime.now(UTC)
+                except Exception as exc:
+                    print(f"[BTC Scalp] Loop error: {exc} — restarting in 10s", flush=True)
+                    await asyncio.sleep(10)
+                    continue
+
+                await asyncio.sleep(POLL_INTERVAL_S)
 
     async def run_forever(self) -> None:
         """Run price feed + scanner forever with crash recovery."""
