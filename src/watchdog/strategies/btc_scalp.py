@@ -205,7 +205,6 @@ class BtcScalpStrategy:
 
         btc = self._btc_price
         now = datetime.now(UTC)
-        cutoff = now + timedelta(minutes=NEAR_EXPIRY_MINUTES)
 
         # ── Generate slugs from current timestamp (btc-updown-5m-[unix_5min_boundary]) ──
         def _btc_updown_slugs() -> list[str]:
