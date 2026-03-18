@@ -210,13 +210,14 @@ class IntraEventArbScanner:
         arb_type: str,
     ) -> None:
         """Create paper Trade records for each YES leg — skip if already open."""
-        # Deduplication: check for any existing arb trades for this event (open or closed)
+        # Deduplication: only block if there is already an OPEN arb trade for this event.
+        # Closed trades are allowed to re-enter (the event may still be showing arb).
         existing = session.execute(
-            text("SELECT COUNT(*) FROM trades WHERE order_id LIKE :pattern"),
+            text("SELECT COUNT(*) FROM trades WHERE order_id LIKE :pattern AND status='open'"),
             {"pattern": f"arb_{event_slug}_%"},
         ).scalar()
         if existing and existing > 0:
-            LOGGER.debug("ARB SCAN: skipping paper trades for %s — already recorded", event_slug)
+            LOGGER.debug("ARB SCAN: skipping paper trades for %s — open position already exists", event_slug)
             return
 
         now = datetime.now(UTC)
@@ -245,24 +246,19 @@ class IntraEventArbScanner:
                 session.add(market_row)
                 session.flush()  # get market_row.id
 
-            # Mark as immediately closed (status="closed", pnl=0.0) so that
-            # exit_manager does not process arb paper trades as real held positions.
-            # Actual arb profit data lives in the arb_opportunities table.
+            # Open paper position — exit_manager will close it when price moves
+            # or the resolution checker fires. PnL is computed on close, not entry.
             trade = Trade(
                 market_id=market_row.id,
                 signal_id=None,
                 side="YES",
                 size=1.0,
                 entry_price=yes_price,
-                exit_price=yes_price,
-                pnl=0.0,
                 kelly_fraction=0.0,
                 is_paper=True,
-                status="closed",
+                status="open",
                 opened_at=now,
-                closed_at=now,
                 strategy="intra_event_arb",
-                close_reason="arb_paper_entry",
                 order_id=f"{group_id}_leg{i}",
                 remaining_fraction=1.0,
             )
