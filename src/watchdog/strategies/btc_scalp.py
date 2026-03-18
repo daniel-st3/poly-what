@@ -41,8 +41,10 @@ POLL_INTERVAL_S = 5
 RESOLUTION_CHECK_INTERVAL_S = 60
 CERTAINTY_THRESHOLD = 0.90
 EDGE_THRESHOLD = 0.08
+MIN_EDGE = 0.10
 PAPER_POSITION_SIZE = 2.0
 NEAR_EXPIRY_MINUTES = 12
+SIGNAL_COOLDOWN_S = 90.0
 
 
 class BtcScalpStrategy:
@@ -54,7 +56,7 @@ class BtcScalpStrategy:
         self._trades_closed: int = 0
         self._pnl: float = 0.0
         self._has_sent_online_ping: bool = False
-        self._fired_signals: set[str] = set()
+        self._fired_signals: dict[str, float] = {}  # signal_key → timestamp
         _s = get_settings()
         self._tg_token: str | None = _s.telegram_bot_token
         self._tg_chat: str | None = _s.telegram_chat_id
@@ -188,7 +190,6 @@ class BtcScalpStrategy:
         up_edge = our_up_prob - up_price
         down_edge = our_down_prob - down_price
 
-        MIN_EDGE = 0.12
         if up_edge > MIN_EDGE:
             return ("Up", up_edge, our_up_prob, up_price)
         if down_edge > MIN_EDGE:
@@ -258,6 +259,7 @@ class BtcScalpStrategy:
             self._price_history.append(self._btc_price)
 
         qualified_count = 0
+        skipped_cooldown = 0
         for m in btc_markets:
             question = m.get("question") or ""
 
@@ -284,11 +286,18 @@ class BtcScalpStrategy:
 
             side, edge, our_prob, market_price = signal
             slug = m.get("slug") or m.get("conditionId") or f"btc-scalp-{int(now.timestamp())}"
-
             signal_key = f"{m.get('conditionId', slug)}-{side}"
+
+            # Purge expired cooldown entries, then check
+            now_ts = time.time()
+            self._fired_signals = {
+                k: v for k, v in self._fired_signals.items()
+                if now_ts - v < SIGNAL_COOLDOWN_S
+            }
             if signal_key in self._fired_signals:
+                skipped_cooldown += 1
                 continue
-            self._fired_signals.add(signal_key)
+            self._fired_signals[signal_key] = now_ts
 
             self._signals += 1
             qualified_count += 1
@@ -299,16 +308,6 @@ class BtcScalpStrategy:
                 f"edge={edge:.2f} | our={our_prob:.2f} | mkt={market_price:.2f} | "
                 f"liq=${liquidity:,.0f} | expires={minutes_left:.1f}min",
                 flush=True,
-            )
-            self._notify(
-                f"⚡ BTC UP/DOWN SIGNAL\n"
-                f"Market: {question}\n"
-                f"Side: {side} | Edge: {edge:.2f}\n"
-                f"Market price: {market_price:.2f}\n"
-                f"Our estimate: {our_prob:.2f}\n"
-                f"Liquidity: ${liquidity:,.0f}\n"
-                f"Time left: {minutes_left:.1f} min\n"
-                f"Expires: {end_date_str}"
             )
 
             with session_factory() as session:
@@ -351,6 +350,7 @@ class BtcScalpStrategy:
                     .first()
                 )
                 if existing:
+                    LOGGER.debug("BTC SCALP: open trade already exists for %s — skipping", slug)
                     continue
 
                 trade = Trade(
@@ -377,10 +377,18 @@ class BtcScalpStrategy:
                     market_price,
                     our_prob,
                 )
+                # Notify AFTER confirmed DB write
+                self._notify(
+                    f"✅ BTC TRADE OPENED\n"
+                    f"Market: {question}\n"
+                    f"Side: {side} | Entry: {market_price:.2f}\n"
+                    f"Edge: {edge:.2f} | Our est: {our_prob:.2f}\n"
+                    f"Time left: {minutes_left:.1f} min"
+                )
 
         print(
             f"[BTC Scalp] Scan done — BTC=${btc:,.0f} | momentum={self._get_momentum():.3f} | "
-            f"markets={len(btc_markets)} | signals={qualified_count}",
+            f"markets={len(btc_markets)} | signals={qualified_count} | cooldown_skipped={skipped_cooldown}",
             flush=True,
         )
 
