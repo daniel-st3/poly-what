@@ -594,12 +594,22 @@ class BtcScalpStrategy:
 
                 if outcome not in ("YES", "NO") and market.condition_id:
                     try:
+                        print(
+                            f"[Gamma] querying slug={market.slug}"
+                            f" condition_id={market.condition_id}{_resolution_age}",
+                            flush=True,
+                        )
                         async with httpx.AsyncClient(timeout=8.0) as client:
                             resp = await client.get(
                                 f"{GAMMA_API_BASE}/markets",
                                 params={"conditionId": market.condition_id},
                             )
                         n_gamma_queried += 1
+                        print(
+                            f"[Gamma] response slug={market.slug}"
+                            f" condition_id={market.condition_id} status={resp.status_code}",
+                            flush=True,
+                        )
                         LOGGER.info(
                             "BTC SCALP Gamma query | slug=%s condition_id=%s status=%d",
                             market.slug, market.condition_id, resp.status_code,
@@ -614,6 +624,13 @@ class BtcScalpStrategy:
                                         outcome = raw
                                         market.resolution_outcome = outcome
                                         market.status = "resolved"
+                                        print(
+                                            f"[Gamma] resolved slug={market.slug}"
+                                            f" condition_id={market.condition_id}"
+                                            f" status={resp.status_code}"
+                                            f" resolved=True resolutionOutcome={raw}",
+                                            flush=True,
+                                        )
                                         LOGGER.info(
                                             "BTC SCALP Gamma resolved | slug=%s"
                                             " resolved=True resolutionOutcome=%s",
@@ -622,6 +639,12 @@ class BtcScalpStrategy:
                                         break
                             else:
                                 n_unresolved += 1
+                                print(
+                                    f"[Gamma] unresolved slug={market.slug}"
+                                    f" condition_id={market.condition_id}"
+                                    f" status={resp.status_code} resolved=False",
+                                    flush=True,
+                                )
                                 LOGGER.info(
                                     "BTC SCALP Gamma not resolved | slug=%s"
                                     " resolved=False or no matching item",
@@ -636,6 +659,12 @@ class BtcScalpStrategy:
 
                 if outcome not in ("YES", "NO"):
                     n_missing_outcome += 1
+                    print(
+                        f"[Gamma] action=missing_outcome slug={market.slug}"
+                        f" condition_id={market.condition_id}"
+                        f" outcome_value={outcome!r}{_resolution_age}",
+                        flush=True,
+                    )
                     LOGGER.info(
                         "BTC SCALP trade disposition | slug=%s action=skipped_missing_outcome"
                         " outcome_value=%r",
@@ -654,6 +683,12 @@ class BtcScalpStrategy:
                     self._pnl += pnl
                     self._trades_closed += 1
                     closed_this_run += 1
+                    print(
+                        f"[Gamma] action={'closed_win' if exit_price == 1.0 else 'closed_loss'}"
+                        f" slug={market.slug} condition_id={market.condition_id}"
+                        f" side={trade.side} outcome={outcome} pnl={pnl:.4f}",
+                        flush=True,
+                    )
                     LOGGER.info(
                         "BTC SCALP trade disposition | trade_id=%d slug=%s side=%s outcome=%s"
                         " action=%s pnl=%.4f",
