@@ -547,6 +547,10 @@ class BtcScalpStrategy:
             market_ids = {t.market_id for t in open_trades}
             now = datetime.now(UTC)
             closed_this_run = 0
+            n_missing_cid: int = 0
+            n_gamma_queried: int = 0
+            n_unresolved: int = 0
+            n_missing_outcome: int = 0
             pending_notifications: list[str] = []
 
             for market_id in market_ids:
@@ -555,12 +559,38 @@ class BtcScalpStrategy:
                 if market is None:
                     continue
 
-                sides = [t.side for t in open_trades if t.market_id == market_id]
+                market_trades = [t for t in open_trades if t.market_id == market_id]
+                sides = [t.side for t in market_trades]
                 print(
                     f"[DEBUG] Checking position: slug={market.slug} condition_id={market.condition_id} side={sides}",
                     flush=True,
                 )
+                _cid = market.condition_id or "MISSING"
+                _cached = (market.resolution_outcome or "").upper() or "none"
+                _resolution_age = ""
+                if market.resolution_time:
+                    _rt = (
+                        market.resolution_time
+                        if market.resolution_time.tzinfo
+                        else market.resolution_time.replace(tzinfo=UTC)
+                    )
+                    _resolution_age = f" resolution_time_age={(now - _rt).total_seconds():.0f}s"
+                LOGGER.info(
+                    "BTC SCALP resolution | slug=%s market_id=%d trade_ids=%s side=%s"
+                    " condition_id=%s cached_outcome=%s%s",
+                    market.slug, market_id, [t.id for t in market_trades],
+                    sides, _cid, _cached, _resolution_age,
+                )
                 outcome = (market.resolution_outcome or "").upper()
+
+                if outcome not in ("YES", "NO") and not market.condition_id:
+                    LOGGER.warning(
+                        "BTC SCALP: trade stuck — condition_id is NULL for slug=%s market_id=%d"
+                        " (cannot query Gamma; trade will never auto-close)",
+                        market.slug, market_id,
+                    )
+                    n_missing_cid += 1
+                    continue
 
                 if outcome not in ("YES", "NO") and market.condition_id:
                     try:
@@ -569,6 +599,11 @@ class BtcScalpStrategy:
                                 f"{GAMMA_API_BASE}/markets",
                                 params={"conditionId": market.condition_id},
                             )
+                        n_gamma_queried += 1
+                        LOGGER.info(
+                            "BTC SCALP Gamma query | slug=%s condition_id=%s status=%d",
+                            market.slug, market.condition_id, resp.status_code,
+                        )
                         if resp.status_code == 200:
                             data = resp.json()
                             items = data if isinstance(data, list) else [data]
@@ -579,7 +614,19 @@ class BtcScalpStrategy:
                                         outcome = raw
                                         market.resolution_outcome = outcome
                                         market.status = "resolved"
+                                        LOGGER.info(
+                                            "BTC SCALP Gamma resolved | slug=%s"
+                                            " resolved=True resolutionOutcome=%s",
+                                            market.slug, raw,
+                                        )
                                         break
+                            else:
+                                n_unresolved += 1
+                                LOGGER.info(
+                                    "BTC SCALP Gamma not resolved | slug=%s"
+                                    " resolved=False or no matching item",
+                                    market.slug,
+                                )
                     except Exception as exc:
                         LOGGER.warning(
                             "BTC SCALP resolution check failed for %s: %s",
@@ -588,11 +635,15 @@ class BtcScalpStrategy:
                         )
 
                 if outcome not in ("YES", "NO"):
+                    n_missing_outcome += 1
+                    LOGGER.info(
+                        "BTC SCALP trade disposition | slug=%s action=skipped_missing_outcome"
+                        " outcome_value=%r",
+                        market.slug, outcome,
+                    )
                     continue
 
-                for trade in open_trades:
-                    if trade.market_id != market_id:
-                        continue
+                for trade in market_trades:
                     exit_price = 1.0 if trade.side == outcome else 0.0
                     pnl = (exit_price - trade.entry_price) * trade.size
                     trade.exit_price = exit_price
@@ -603,6 +654,13 @@ class BtcScalpStrategy:
                     self._pnl += pnl
                     self._trades_closed += 1
                     closed_this_run += 1
+                    LOGGER.info(
+                        "BTC SCALP trade disposition | trade_id=%d slug=%s side=%s outcome=%s"
+                        " action=%s pnl=%.4f",
+                        trade.id, market.slug, trade.side, outcome,
+                        "closed_win" if exit_price == 1.0 else "closed_loss",
+                        pnl,
+                    )
                     if exit_price == 1.0:
                         pending_notifications.append(
                             f"🏆 BTC TRADE CLOSED — WIN\n"
@@ -648,6 +706,11 @@ class BtcScalpStrategy:
                     )
 
             session.commit()
+            LOGGER.info(
+                "BTC SCALP resolution cycle | open_checked=%d missing_condition_id=%d"
+                " gamma_queried=%d unresolved=%d missing_outcome=%d closed=%d",
+                n_open, n_missing_cid, n_gamma_queried, n_unresolved, n_missing_outcome, closed_this_run,
+            )
 
         if pending_notifications:
             try:
@@ -665,6 +728,10 @@ class BtcScalpStrategy:
         print(
             f"[Resolution] Checked {n_open} open positions, {closed_this_run} resolved and closed",
             flush=True,
+        )
+        LOGGER.info(
+            "[Resolution] open=%d closed=%d missing_cid=%d gamma_queried=%d unresolved=%d",
+            n_open, closed_this_run, n_missing_cid, n_gamma_queried, n_unresolved,
         )
 
     # ── Main loop ───────────────────────────────────────────────────────────
