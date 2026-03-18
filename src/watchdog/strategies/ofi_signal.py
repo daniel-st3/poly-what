@@ -38,7 +38,7 @@ LOGGER = logging.getLogger(__name__)
 
 OFI_DEDUP_MINUTES = 60        # skip re-scan within this window
 OFI_TOP_N_MARKETS = 25        # how many top-volume markets to scan each run
-OFI_MIN_NOTIONAL = 500.0      # minimum |obi_notional| to open a paper trade
+OFI_MIN_NOTIONAL = 0.3        # minimum |obi_notional| ratio to open a paper trade (obi_notional is -1..1)
 OFI_HOLD_HOURS = 24.0         # close paper trades after this many hours
 GAMMA_API = "https://gamma-api.polymarket.com"
 
