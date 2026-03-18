@@ -1169,11 +1169,21 @@ def send_eod_summary_command() -> None:
     def _pnl(v: float) -> str:
         return f"{'+' if v >= 0 else ''}${v:.2f}"
 
-    balance_line = (
-        f"💼 $100: ${p100.current_balance:,.2f}  ({p100.total_return_pct:+.1f}%)\n"
-        f"   $500: ${p500.current_balance:,.2f}  ({p500.total_return_pct:+.1f}%)\n"
-        f"🔻 Peak drawdown: -{max(p100.drawdown_pct, p500.drawdown_pct):.1f}%"
-    ) if p100 and p500 else "💼 Portfolio data unavailable"
+    def _fmt_pct_eod(v: float) -> str:
+        return "0.0%" if abs(v) < 0.05 else f"{v:+.1f}%"
+
+    if p100 and p500:
+        balance_line = (
+            f"💼 $100: ${p100.current_balance:,.2f} realized"
+            + (f" | equity ${p100.equity:,.2f} ({_fmt_pct_eod((p100.equity - 100.0) / 100.0 * 100)})" if p100.open_pnl_estimate is not None else "")
+            + f"\n"
+            f"   $500: ${p500.current_balance:,.2f} realized"
+            + (f" | equity ${p500.equity:,.2f} ({_fmt_pct_eod((p500.equity - 500.0) / 500.0 * 100)})" if p500.open_pnl_estimate is not None else "")
+            + f"\n"
+            f"🔻 Peak drawdown: -{max(p100.drawdown_pct, p500.drawdown_pct):.1f}%"
+        )
+    else:
+        balance_line = "💼 Portfolio data unavailable"
 
     btc_scalp_line = (
         f"⚡ BTC SCALP: {btc_signals_today} signals | "
@@ -1333,41 +1343,18 @@ def send_daily_telegram_command() -> None:
             if (t.strategy or "") not in _arb_strats
         )
 
-        # Confidence scores: ARB=30, OFI=25, ENSEMBLE=25, WHALE=20 per market slug
-        confidence: dict[str, int] = {}
-
-        for row in session.query(ArbOpportunity).filter(ArbOpportunity.timestamp >= today_start).all():
-            slug = row.event_slug or ""
-            if slug:
-                confidence[slug] = confidence.get(slug, 0) + 30
-
-        for row in session.query(OFISignal).filter(
-            OFISignal.scanned_at >= today_start,
-            OFISignal.signal != "neutral",
-        ).all():
-            mkt = session.get(Market, row.market_id) if row.market_id else None
-            slug = (mkt.slug if mkt else None) or ""
-            if slug:
-                confidence[slug] = confidence.get(slug, 0) + 25
-
-        for row in session.query(EnsembleSignal).filter(
-            EnsembleSignal.scanned_at >= today_start,
-            EnsembleSignal.divergence > 0.05,
-        ).all():
-            mkt = session.get(Market, row.market_id) if row.market_id else None
-            slug = (mkt.slug if mkt else None) or ""
-            if slug:
-                confidence[slug] = confidence.get(slug, 0) + 25
-
-        for row in session.query(WhaleActivity).filter(
-            WhaleActivity.timestamp >= today_start,
-            WhaleActivity.whale_signal == "large_position",
-        ).all():
-            slug = row.market_slug or ""
-            if slug:
-                confidence[slug] = confidence.get(slug, 0) + 20
-
-        top_signals = sorted(confidence.items(), key=lambda x: x[1], reverse=True)[:3]
+        # Top signals: top 3 ensemble divergences for today (human-readable)
+        top_ens_rows = (
+            session.query(EnsembleSignal, Market)
+            .join(Market, EnsembleSignal.market_id == Market.id)
+            .filter(
+                EnsembleSignal.scanned_at >= today_start,
+                EnsembleSignal.divergence > 0.05,
+            )
+            .order_by(EnsembleSignal.divergence.desc())
+            .limit(3)
+            .all()
+        )
 
         # Portfolio tracker — update both portfolios and get current state
         portfolios = update_portfolios(session)
@@ -1396,36 +1383,72 @@ def send_daily_telegram_command() -> None:
         sign = "+" if pnl >= 0 else ""
         return f"{sign}${pnl:.2f}"
 
+    def _fmt_pct(v: float) -> str:
+        if abs(v) < 0.05:
+            return "0.0%"
+        return f"{v:+.1f}%"
+
+    def _fmt_open_pnl(v: float | None, priced: int, total: int) -> str:
+        if v is None:
+            return "n/a"
+        prefix = "~" if priced < total else ""
+        sign = "+" if v > 0 else ""
+        est_str = f"{prefix}{sign}${v:.2f}"
+        if priced < total:
+            est_str += f" ({priced}/{total} priced)"
+        return est_str
+
+    def _portfolio_section(p: object, cap: float, run_n_val: int | None = None) -> str:
+        from watchdog.backtest.portfolio import PortfolioState
+        assert isinstance(p, PortfolioState)
+        equity_return_pct = (p.equity - cap) / cap * 100 if cap > 0 else 0.0
+        open_pnl_str = _fmt_open_pnl(p.open_pnl_estimate, p.open_pnl_priced_count, p.open_count)
+        lines = [
+            f"💵 ${cap:.0f} Portfolio",
+            f"   Balance:          ${p.current_balance:,.2f}",
+            f"   Open PnL est:     {open_pnl_str}",
+            f"   Equity:           ${p.equity:,.2f}",
+            f"   This run:         {_pnl_str(p.run_pnl)}",
+            f"   Closed:           {p.closed_count}  ({p.wins}W / {p.losses}L / {p.breakevens}BE)",
+            f"   Open:             {p.open_count} positions",
+            f"   Deployed:         ${p.deployed_capital:.2f} | Free: ${p.free_capital:.2f}",
+            f"   Return (realized): {_fmt_pct(p.total_return_pct)}",
+            f"   Return (equity):   {_fmt_pct(equity_return_pct)}",
+        ]
+        if p.closed_count == 0:
+            lines.append("   Drawdown:         N/A")
+        else:
+            lines.append(f"   Drawdown:         -{p.drawdown_pct:.1f}% from peak")
+        return "\n".join(lines)
+
     p100 = portfolios.get(100.0)
     p500 = portfolios.get(500.0)
 
-    portfolio_block = (
-        "\n💼 PORTFOLIO TRACKER\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        f"💵 $100 Portfolio\n"
-        f"   Balance:      ${p100.current_balance:,.2f}\n"
-        f"   This run:     {_pnl_str(p100.run_pnl)}\n"
-        f"   Closed trades: {p100.closed_count} ({p100.wins}W / {p100.losses}L)\n"
-        f"   Total return: {p100.total_return_pct:+.1f}%\n"
-        f"   Drawdown:     {'N/A' if p100.closed_count == 0 else f'-{p100.drawdown_pct:.1f}% from peak'}\n"
-        f"\n"
-        f"💵 $500 Portfolio\n"
-        f"   Balance:      ${p500.current_balance:,.2f}\n"
-        f"   This run:     {_pnl_str(p500.run_pnl)}\n"
-        f"   Closed trades: {p500.closed_count} ({p500.wins}W / {p500.losses}L)\n"
-        f"   Total return: {p500.total_return_pct:+.1f}%\n"
-        f"   Drawdown:     {'N/A' if p500.closed_count == 0 else f'-{p500.drawdown_pct:.1f}% from peak'}\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"📅 Run {run_n} of 4 today"
-    ) if p100 and p500 else ""
-
-    top_signals_block = ""
-    if top_signals:
-        lines = "\n".join(
-            f"   {i+1}. {slug[:40]} — {score}/100"
-            for i, (slug, score) in enumerate(top_signals)
+    if p100 and p500:
+        portfolio_block = (
+            "\n💼 PORTFOLIO TRACKER\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            + _portfolio_section(p100, 100.0)
+            + "\n\n"
+            + _portfolio_section(p500, 500.0)
+            + "\n━━━━━━━━━━━━━━━━━━━\n"
+            + f"📅 Run {run_n} of 4 today"
         )
-        top_signals_block = f"\n🎯 TOP SIGNALS TODAY\n{lines}\n"
+    else:
+        portfolio_block = ""
+
+    if top_ens_rows:
+        sig_lines = []
+        for i, (ens, mkt) in enumerate(top_ens_rows):
+            direction = "YES" if ens.p_ensemble > ens.p_polymarket else "NO"
+            mkt_pct = round(ens.p_polymarket * 100)
+            mdl_pct = round(ens.p_ensemble * 100)
+            edge_pp = round(abs(ens.p_ensemble - ens.p_polymarket) * 100)
+            slug = (mkt.slug or "unknown")[:40]
+            sig_lines.append(f"   {i + 1}. {slug}  {direction}  mkt={mkt_pct}%→mdl={mdl_pct}%  +{edge_pp}pp edge")
+        top_signals_block = "\n🎯 TOP SIGNALS TODAY\n" + "\n".join(sig_lines) + "\n"
+    else:
+        top_signals_block = "\n🎯 Top signals: none today\n"
 
     msg = (
         f"🤖 poly-agent run complete — {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}\n"
@@ -1515,6 +1538,19 @@ def portfolio_status_command() -> None:
             typer.echo("Seeding complete.")
             typer.echo("")
 
+    def _fmt_pct_ps(v: float) -> str:
+        return "0.0%" if abs(v) < 0.05 else f"{v:+.1f}%"
+
+    def _fmt_open_pnl_ps(v: float | None, priced: int, total: int) -> str:
+        if v is None:
+            return "n/a"
+        prefix = "~" if priced < total else ""
+        sign = "+" if v > 0 else ""
+        s = f"{prefix}{sign}${v:.2f}"
+        if priced < total:
+            s += f" ({priced}/{total} priced)"
+        return s
+
     typer.echo("Portfolio Status")
     typer.echo("=" * 40)
     for cap in STARTING_CAPITALS:
@@ -1527,13 +1563,24 @@ def portfolio_status_command() -> None:
             else f"-${abs(p.run_pnl):.2f}" if p.run_pnl < 0
             else "$0.00 (no closed positions)"
         )
+        equity_return_pct = (p.equity - cap) / cap * 100 if cap > 0 else 0.0
+        open_pnl_str = _fmt_open_pnl_ps(p.open_pnl_estimate, p.open_pnl_priced_count, p.open_count)
         typer.echo(f"  ${cap:.0f} Portfolio")
-        typer.echo(f"    Balance:      ${p.current_balance:,.2f}")
-        typer.echo(f"    Peak:         ${p.peak_balance:,.2f}")
-        typer.echo(f"    Last run PnL: {run_str}")
-        typer.echo(f"    Total return: {p.total_return_pct:+.1f}%")
-        typer.echo(f"    Drawdown:     -{p.drawdown_pct:.1f}% from peak")
-        typer.echo(f"    Last updated: {p.timestamp.strftime('%Y-%m-%d %H:%M UTC')}")
+        typer.echo(f"    Balance:          ${p.current_balance:,.2f}")
+        typer.echo(f"    Open PnL est:     {open_pnl_str}")
+        typer.echo(f"    Equity:           ${p.equity:,.2f}")
+        typer.echo(f"    Deployed capital: ${p.deployed_capital:.2f}")
+        typer.echo(f"    Free capital:     ${p.free_capital:.2f}")
+        typer.echo(f"    Closed:           {p.closed_count}  ({p.wins}W / {p.losses}L / {p.breakevens}BE)")
+        typer.echo(f"    Open:             {p.open_count} positions")
+        typer.echo(f"    Last run PnL:     {run_str}")
+        typer.echo(f"    Total return:     {_fmt_pct_ps(p.total_return_pct)}")
+        typer.echo(f"    Equity return:    {_fmt_pct_ps(equity_return_pct)}")
+        if p.closed_count == 0:
+            typer.echo("    Drawdown:         N/A")
+        else:
+            typer.echo(f"    Drawdown:         -{p.drawdown_pct:.1f}% from peak")
+        typer.echo(f"    Last updated:     {p.timestamp.strftime('%Y-%m-%d %H:%M UTC')}")
         typer.echo("")
 
 

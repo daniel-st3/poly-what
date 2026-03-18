@@ -3,14 +3,17 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import NamedTuple
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from watchdog.db.models import PortfolioSnapshot, Trade
+from watchdog.db.models import MarketSnapshot, PortfolioSnapshot, Trade
 
 KELLY_CAP = 0.20
 MIN_POSITION = 1.0
-EXCLUDED_STRATEGIES = {"intra_event_arb"}
+# Strategies excluded from the normal-bot $100/$500 portfolio scope.
+# btc_scalp is a separate Railway worker; intra_event_arb is excluded by convention.
+_DEFAULT_EXCLUDED: frozenset[str] = frozenset({"intra_event_arb", "btc_scalp"})
+EXCLUDED_STRATEGIES = _DEFAULT_EXCLUDED  # backward-compat alias
 STARTING_CAPITALS = [100.0, 500.0]
 
 
@@ -26,10 +29,26 @@ class PortfolioState(NamedTuple):
     closed_count: int
     wins: int
     losses: int
+    breakevens: int
+    open_count: int
+    realized_pnl: float
+    deployed_capital: float
+    free_capital: float
+    open_pnl_estimate: float | None
+    open_pnl_priced_count: int
+    equity: float
 
 
-def _fetch_closed_paper_trades(session: Session) -> list[Trade]:
-    """Fetch all closed paper trades with non-null pnl, ordered by closed_at."""
+def _fetch_closed_paper_trades(
+    session: Session,
+    excluded_strategies: frozenset[str] | None = None,
+) -> list[Trade]:
+    """Fetch all closed paper trades with non-null pnl, ordered by closed_at.
+
+    Excludes strategies in excluded_strategies (defaults to _DEFAULT_EXCLUDED).
+    Trade.strategy is nullable: NULL-strategy rows are included in the normal scope.
+    """
+    excl = excluded_strategies if excluded_strategies is not None else _DEFAULT_EXCLUDED
     return list(
         session.execute(
             select(Trade)
@@ -37,21 +56,93 @@ def _fetch_closed_paper_trades(session: Session) -> list[Trade]:
                 Trade.is_paper == True,  # noqa: E712
                 Trade.status == "closed",
                 Trade.pnl.is_not(None),
+                or_(Trade.strategy.is_(None), Trade.strategy.not_in(excl)),
             )
             .order_by(Trade.closed_at.asc())
         ).scalars().all()
     )
 
 
+def _fetch_open_paper_trades(
+    session: Session,
+    excluded_strategies: frozenset[str] | None = None,
+) -> list[Trade]:
+    """Fetch all open paper trades.
+
+    Excludes strategies in excluded_strategies (defaults to _DEFAULT_EXCLUDED).
+    Trade.strategy is nullable: NULL-strategy rows are included in the normal scope.
+    """
+    excl = excluded_strategies if excluded_strategies is not None else _DEFAULT_EXCLUDED
+    return list(
+        session.execute(
+            select(Trade)
+            .where(
+                Trade.is_paper == True,  # noqa: E712
+                Trade.status == "open",
+                or_(Trade.strategy.is_(None), Trade.strategy.not_in(excl)),
+            )
+        ).scalars().all()
+    )
+
+
+def _compute_open_pnl_estimate(
+    session: Session,
+    open_trades: list[Trade],
+) -> tuple[float | None, int, int]:
+    """Estimate unrealized PnL for open trades using latest MarketSnapshot.mid.
+
+    Returns (estimate, priced_count, total_open_count).
+    - estimate is None if no trades have a usable mid price.
+    - estimate is a partial sum if only some trades are priced.
+    """
+    total_open_count = len(open_trades)
+    if total_open_count == 0:
+        return None, 0, 0
+
+    market_ids = {t.market_id for t in open_trades}
+
+    # Build {market_id: latest non-null mid}.
+    # Order by captured_at desc and keep first hit per market_id (Python-side dedup
+    # so the query works on both SQLite and PostgreSQL).
+    mid_by_market: dict[int, float] = {}
+    for row in session.execute(
+        select(MarketSnapshot.market_id, MarketSnapshot.mid, MarketSnapshot.captured_at)
+        .where(
+            MarketSnapshot.market_id.in_(market_ids),
+            MarketSnapshot.mid.is_not(None),
+        )
+        .order_by(MarketSnapshot.captured_at.desc())
+    ).all():
+        market_id_val = row[0]
+        if market_id_val not in mid_by_market:
+            mid_by_market[market_id_val] = float(row[1])
+
+    running_sum = 0.0
+    priced_count = 0
+    for t in open_trades:
+        mid = mid_by_market.get(t.market_id)
+        if mid is None:
+            continue
+        if t.side == "YES":
+            running_sum += t.size * (mid - t.entry_price)
+        else:
+            running_sum += t.size * (t.entry_price - mid)
+        priced_count += 1
+
+    if priced_count == 0:
+        return None, 0, total_open_count
+    return running_sum, priced_count, total_open_count
+
+
 def _portfolio_stats_from_trades(
     trades: list[Trade],
     cap: float,
     run_start: datetime,
-) -> tuple[float, float, float, float, float, int, int, int, int]:
+) -> tuple[float, float, float, float, float, int, int, int, int, int]:
     """Compute all portfolio stats from actual Trade.pnl values.
 
     Returns (balance, peak, run_pnl, total_return_pct, drawdown_pct,
-             closed_count, wins, losses, run_count).
+             closed_count, wins, losses, breakevens, run_count).
     """
     realized_pnl = sum(t.pnl for t in trades)  # type: ignore[misc]
     balance = cap + realized_pnl
@@ -72,10 +163,11 @@ def _portfolio_stats_from_trades(
 
     closed_count = len(trades)
     wins = sum(1 for t in trades if (t.pnl or 0.0) > 0)
-    losses = sum(1 for t in trades if (t.pnl or 0.0) <= 0)
+    losses = sum(1 for t in trades if (t.pnl or 0.0) < 0)
+    breakevens = sum(1 for t in trades if (t.pnl or 0.0) == 0.0)
     run_count = len(run_trades)
 
-    return balance, peak, run_pnl, total_return_pct, drawdown_pct, closed_count, wins, losses, run_count
+    return balance, peak, run_pnl, total_return_pct, drawdown_pct, closed_count, wins, losses, breakevens, run_count
 
 
 def update_portfolios(session: Session, run_window_hours: int = 6) -> dict[float, PortfolioState]:
@@ -83,17 +175,26 @@ def update_portfolios(session: Session, run_window_hours: int = 6) -> dict[float
     now = datetime.utcnow()
     run_start = now - timedelta(hours=run_window_hours)
 
-    # Fetch all closed paper trades once — same data for both portfolio sizes
-    trades = _fetch_closed_paper_trades(session)
+    # Fetch once — shared across all portfolio sizes
+    closed_trades = _fetch_closed_paper_trades(session)
+    open_trades = _fetch_open_paper_trades(session)
+
+    open_pnl_estimate, open_pnl_priced_count, total_open_count = _compute_open_pnl_estimate(
+        session, open_trades
+    )
+    deployed_capital = sum(t.size * t.entry_price for t in open_trades)
 
     results: dict[float, PortfolioState] = {}
 
     for cap in STARTING_CAPITALS:
-        balance, peak, run_pnl, total_return_pct, drawdown_pct, closed_count, wins, losses, run_count = (
-            _portfolio_stats_from_trades(trades, cap, run_start)
+        balance, peak, run_pnl, total_return_pct, drawdown_pct, closed_count, wins, losses, breakevens, run_count = (
+            _portfolio_stats_from_trades(closed_trades, cap, run_start)
         )
 
         realized_pnl = balance - cap
+        free_capital = balance - deployed_capital
+        equity = balance + (open_pnl_estimate or 0.0)
+
         print(
             f"📊 portfolio update ${cap:.0f}: closed_trades={closed_count}, "
             f"realized_pnl={realized_pnl:.2f}, balance={balance:.2f}"
@@ -122,6 +223,14 @@ def update_portfolios(session: Session, run_window_hours: int = 6) -> dict[float
             closed_count=closed_count,
             wins=wins,
             losses=losses,
+            breakevens=breakevens,
+            open_count=total_open_count,
+            realized_pnl=realized_pnl,
+            deployed_capital=deployed_capital,
+            free_capital=free_capital,
+            open_pnl_estimate=open_pnl_estimate,
+            open_pnl_priced_count=open_pnl_priced_count,
+            equity=equity,
         )
 
     session.commit()
@@ -137,7 +246,23 @@ def seed_portfolios(session: Session) -> dict[float, PortfolioState]:
 
 
 def get_current_portfolios(session: Session) -> dict[float, PortfolioState | None]:
-    """Return the latest snapshot for each portfolio without writing anything."""
+    """Return the latest snapshot for each portfolio without writing anything.
+
+    Counts (closed_count, wins, losses, breakevens, open_count) are computed
+    live from DB trades so they are never stale zeros.
+    """
+    # Fetch trades once — shared across all portfolio sizes
+    closed_trades = _fetch_closed_paper_trades(session)
+    open_trades = _fetch_open_paper_trades(session)
+
+    open_pnl_estimate, open_pnl_priced_count, total_open_count = _compute_open_pnl_estimate(
+        session, open_trades
+    )
+    deployed_capital = sum(t.size * t.entry_price for t in open_trades)
+
+    now = datetime.utcnow()
+    run_start = now - timedelta(hours=6)
+
     results: dict[float, PortfolioState | None] = {}
     for cap in STARTING_CAPITALS:
         latest = session.execute(
@@ -156,6 +281,13 @@ def get_current_portfolios(session: Session) -> dict[float, PortfolioState | Non
             if latest.peak_balance > 0
             else 0.0
         )
+
+        _, _, _, _, _, closed_count, wins, losses, breakevens, _ = _portfolio_stats_from_trades(
+            closed_trades, cap, run_start
+        )
+        free_capital = latest.current_balance - deployed_capital
+        equity = latest.current_balance + (open_pnl_estimate or 0.0)
+
         results[cap] = PortfolioState(
             starting_capital=cap,
             current_balance=latest.current_balance,
@@ -165,9 +297,17 @@ def get_current_portfolios(session: Session) -> dict[float, PortfolioState | Non
             drawdown_pct=dd,
             trades_today=latest.trades_today,
             timestamp=latest.timestamp,
-            closed_count=0,  # not stored in snapshot; callers that need it use update_portfolios
-            wins=0,
-            losses=0,
+            closed_count=closed_count,
+            wins=wins,
+            losses=losses,
+            breakevens=breakevens,
+            open_count=total_open_count,
+            realized_pnl=latest.current_balance - cap,
+            deployed_capital=deployed_capital,
+            free_capital=free_capital,
+            open_pnl_estimate=open_pnl_estimate,
+            open_pnl_priced_count=open_pnl_priced_count,
+            equity=equity,
         )
     return results
 
