@@ -472,6 +472,22 @@ class BtcScalpStrategy:
                     self._pnl += pnl
                     self._trades_closed += 1
                     closed_this_run += 1
+                    if exit_price == 1.0:
+                        self._notify(
+                            f"🏆 BTC TRADE CLOSED — WIN\n"
+                            f"Market: {market.question}\n"
+                            f"Side: {trade.side} | Entry: {trade.entry_price:.2f} → Exit: 1.00\n"
+                            f"PnL: +${pnl:.2f} on $2.00 stake\n"
+                            f"Session: {self._trades_closed} closed | Net PnL: ${self._pnl:+.2f}"
+                        )
+                    else:
+                        self._notify(
+                            f"❌ BTC TRADE CLOSED — LOSS\n"
+                            f"Market: {market.question}\n"
+                            f"Side: {trade.side} | Entry: {trade.entry_price:.2f} → Exit: 0.00\n"
+                            f"PnL: -${abs(pnl):.2f} on $2.00 stake\n"
+                            f"Session: {self._trades_closed} closed | Net PnL: ${self._pnl:+.2f}"
+                        )
                     LOGGER.info(
                         "BTC SCALP: closed %s side=%s outcome=%s pnl=%.4f",
                         market.slug,
