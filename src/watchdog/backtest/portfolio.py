@@ -23,171 +23,81 @@ class PortfolioState(NamedTuple):
     drawdown_pct: float
     trades_today: int
     timestamp: datetime
+    closed_count: int
+    wins: int
+    losses: int
 
 
-def _apply_trades(
-    trades: list[Trade],
-    starting_balance: float,
-    starting_peak: float,
-) -> tuple[float, float, float, int]:
-    """Apply trades in order using Kelly sizing. Returns (balance, peak, total_pnl, count)."""
-    balance = starting_balance
-    peak = starting_peak
-    total_pnl = 0.0
-    count = 0
-
-    for trade in trades:
-        if trade.exit_price is None or trade.entry_price is None or trade.entry_price == 0:
-            continue
-        kelly = min(trade.kelly_fraction or 0.10, KELLY_CAP)
-        position_size = balance * kelly
-        if position_size < MIN_POSITION:
-            continue
-
-        pnl = position_size * (trade.exit_price - trade.entry_price) / trade.entry_price
-        balance = max(0.0, balance + pnl)
-        peak = max(peak, balance)
-        total_pnl += pnl
-        count += 1
-
-    return balance, peak, total_pnl, count
-
-
-def _fetch_closed_trades(
-    session: Session,
-    *,
-    after: datetime | None = None,
-    before: datetime | None = None,
-) -> list[Trade]:
-    q = (
-        select(Trade)
-        .where(
-            Trade.status == "closed",
-            Trade.entry_price.is_not(None),
-            ~Trade.strategy.in_(list(EXCLUDED_STRATEGIES)),
-        )
-        .order_by(Trade.opened_at.asc())
+def _fetch_closed_paper_trades(session: Session) -> list[Trade]:
+    """Fetch all closed paper trades with non-null pnl, ordered by closed_at."""
+    return list(
+        session.execute(
+            select(Trade)
+            .where(
+                Trade.is_paper == True,  # noqa: E712
+                Trade.status == "closed",
+                Trade.pnl.is_not(None),
+            )
+            .order_by(Trade.closed_at.asc())
+        ).scalars().all()
     )
-    if after is not None:
-        q = q.where(Trade.closed_at > after)
-    if before is not None:
-        q = q.where(Trade.closed_at <= before)
-    return list(session.execute(q).scalars().all())
 
 
-def seed_portfolios(session: Session) -> dict[float, PortfolioState]:
-    """Replay all existing closed trades to establish baseline balances for both portfolios.
+def _portfolio_stats_from_trades(
+    trades: list[Trade],
+    cap: float,
+    run_start: datetime,
+) -> tuple[float, float, float, float, float, int, int, int, int]:
+    """Compute all portfolio stats from actual Trade.pnl values.
 
-    Saves a seed snapshot (run_pnl=0, trades_today=0) so incremental updates know
-    where to start. Safe to call multiple times — only seeds if no snapshot exists yet.
+    Returns (balance, peak, run_pnl, total_return_pct, drawdown_pct,
+             closed_count, wins, losses, run_count).
     """
-    now = datetime.utcnow()  # naive UTC — must match how closed_at is stored in SQLite
-    results: dict[float, PortfolioState] = {}
+    realized_pnl = sum(t.pnl for t in trades)  # type: ignore[misc]
+    balance = cap + realized_pnl
+    total_return_pct = (realized_pnl / cap) * 100
 
-    for cap in STARTING_CAPITALS:
-        latest = session.execute(
-            select(PortfolioSnapshot)
-            .where(PortfolioSnapshot.starting_capital == cap)
-            .order_by(PortfolioSnapshot.timestamp.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+    # Peak from running cumulative balance through ordered trade history
+    peak = cap
+    running = cap
+    for t in trades:
+        running += t.pnl  # type: ignore[operator]
+        if running > peak:
+            peak = running
+    drawdown_pct = (peak - balance) / peak * 100 if peak > 0 else 0.0
 
-        if latest is not None and latest.current_balance != cap:
-            # Latest snapshot has real data — return it directly.
-            # If current_balance == starting capital the snapshot is likely from a
-            # botched run (saved before any trades were replayed); fall through
-            # and recalculate from trades so we recover the correct balance.
-            dd = (
-                (latest.peak_balance - latest.current_balance) / latest.peak_balance * 100
-                if latest.peak_balance > 0
-                else 0.0
-            )
-            results[cap] = PortfolioState(
-                starting_capital=cap,
-                current_balance=latest.current_balance,
-                peak_balance=latest.peak_balance,
-                run_pnl=latest.run_pnl,
-                total_return_pct=latest.total_return_pct,
-                drawdown_pct=dd,
-                trades_today=latest.trades_today,
-                timestamp=latest.timestamp,
-            )
-            continue
+    # "This run" = trades closed since run_start
+    run_trades = [t for t in trades if t.closed_at is not None and t.closed_at >= run_start]
+    run_pnl = sum(t.pnl for t in run_trades)  # type: ignore[misc]
 
-        trades = _fetch_closed_trades(session)
-        balance, peak, _, _ = _apply_trades(trades, cap, cap)
-        total_return = (balance - cap) / cap * 100
-        drawdown = (peak - balance) / peak * 100 if peak > 0 else 0.0
+    closed_count = len(trades)
+    wins = sum(1 for t in trades if (t.pnl or 0.0) > 0)
+    losses = sum(1 for t in trades if (t.pnl or 0.0) <= 0)
+    run_count = len(run_trades)
 
-        snap = PortfolioSnapshot(
-            timestamp=now,
-            starting_capital=cap,
-            current_balance=balance,
-            peak_balance=peak,
-            run_pnl=0.0,
-            total_return_pct=total_return,
-            drawdown_pct=drawdown,
-            trades_today=0,
-        )
-        session.add(snap)
-        results[cap] = PortfolioState(
-            starting_capital=cap,
-            current_balance=balance,
-            peak_balance=peak,
-            run_pnl=0.0,
-            total_return_pct=total_return,
-            drawdown_pct=drawdown,
-            trades_today=0,
-            timestamp=now,
-        )
-
-    session.commit()
-    return results
+    return balance, peak, run_pnl, total_return_pct, drawdown_pct, closed_count, wins, losses, run_count
 
 
 def update_portfolios(session: Session, run_window_hours: int = 6) -> dict[float, PortfolioState]:
-    """Apply trades closed since last snapshot and save new snapshots.
-
-    Called after each bot run. The run_pnl field captures PnL from trades
-    closed within the run_window_hours window for the Telegram display.
-    """
-    now = datetime.utcnow()  # naive UTC — must match how closed_at is stored in SQLite
+    """Recompute portfolio stats from all closed paper trades and save new snapshots."""
+    now = datetime.utcnow()
     run_start = now - timedelta(hours=run_window_hours)
+
+    # Fetch all closed paper trades once — same data for both portfolio sizes
+    trades = _fetch_closed_paper_trades(session)
+
     results: dict[float, PortfolioState] = {}
 
     for cap in STARTING_CAPITALS:
-        latest = session.execute(
-            select(PortfolioSnapshot)
-            .where(PortfolioSnapshot.starting_capital == cap)
-            .order_by(PortfolioSnapshot.timestamp.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+        balance, peak, run_pnl, total_return_pct, drawdown_pct, closed_count, wins, losses, run_count = (
+            _portfolio_stats_from_trades(trades, cap, run_start)
+        )
 
-        if latest is None:
-            # Auto-seed if called before explicit seeding
-            seeded = seed_portfolios(session)
-            return seeded
-
-        # All trades since last snapshot
-        new_trades = _fetch_closed_trades(session, after=latest.timestamp)
-
-        # "This run" = trades from within the run window (for display)
-        run_trades = [t for t in new_trades if t.closed_at is not None and t.closed_at >= run_start]
-
+        realized_pnl = balance - cap
         print(
-            f"📊 portfolio update ${cap:.0f}: last_snapshot={latest.timestamp.strftime('%m-%d %H:%M')}, "
-            f"new_trades={len(new_trades)}, run_trades={len(run_trades)}"
+            f"📊 portfolio update ${cap:.0f}: closed_trades={closed_count}, "
+            f"realized_pnl={realized_pnl:.2f}, balance={balance:.2f}"
         )
-
-        balance, peak, _new_pnl, _ = _apply_trades(
-            new_trades, latest.current_balance, latest.peak_balance
-        )
-        _, _, run_pnl, run_count = _apply_trades(
-            run_trades, latest.current_balance, latest.peak_balance
-        )
-
-        total_return = (balance - cap) / cap * 100
-        drawdown = (peak - balance) / peak * 100 if peak > 0 else 0.0
 
         snap = PortfolioSnapshot(
             timestamp=now,
@@ -195,8 +105,8 @@ def update_portfolios(session: Session, run_window_hours: int = 6) -> dict[float
             current_balance=balance,
             peak_balance=peak,
             run_pnl=run_pnl,
-            total_return_pct=total_return,
-            drawdown_pct=drawdown,
+            total_return_pct=total_return_pct,
+            drawdown_pct=drawdown_pct,
             trades_today=run_count,
         )
         session.add(snap)
@@ -205,14 +115,25 @@ def update_portfolios(session: Session, run_window_hours: int = 6) -> dict[float
             current_balance=balance,
             peak_balance=peak,
             run_pnl=run_pnl,
-            total_return_pct=total_return,
-            drawdown_pct=drawdown,
+            total_return_pct=total_return_pct,
+            drawdown_pct=drawdown_pct,
             trades_today=run_count,
             timestamp=now,
+            closed_count=closed_count,
+            wins=wins,
+            losses=losses,
         )
 
     session.commit()
     return results
+
+
+def seed_portfolios(session: Session) -> dict[float, PortfolioState]:
+    """Recompute portfolios from all historical closed trades (alias for update_portfolios).
+
+    Safe to call multiple times. Always derives state from DB, never from hardcoded values.
+    """
+    return update_portfolios(session)
 
 
 def get_current_portfolios(session: Session) -> dict[float, PortfolioState | None]:
@@ -244,6 +165,9 @@ def get_current_portfolios(session: Session) -> dict[float, PortfolioState | Non
             drawdown_pct=dd,
             trades_today=latest.trades_today,
             timestamp=latest.timestamp,
+            closed_count=0,  # not stored in snapshot; callers that need it use update_portfolios
+            wins=0,
+            losses=0,
         )
     return results
 
