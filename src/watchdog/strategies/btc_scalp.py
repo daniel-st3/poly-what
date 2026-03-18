@@ -767,17 +767,28 @@ class BtcScalpStrategy:
 
             last_resolution_check = datetime.now(UTC)
             while True:
+                # ── Scan ────────────────────────────────────────────────
                 try:
                     await self._scan_markets()
-
-                    elapsed = (datetime.now(UTC) - last_resolution_check).total_seconds()
-                    if elapsed >= RESOLUTION_CHECK_INTERVAL_S:
-                        await self._check_resolutions()
-                        last_resolution_check = datetime.now(UTC)
                 except Exception as exc:
-                    print(f"[BTC Scalp] Loop error: {exc} — restarting in 10s", flush=True)
+                    print(f"[BTC Scalp] Scan error: {exc} — continuing", flush=True)
+                    LOGGER.warning("BTC scalp scan error: %s", exc)
                     await asyncio.sleep(10)
-                    continue
+                    # intentional fall-through: resolution gate still runs below
+
+                # ── Resolution gate ─────────────────────────────────────
+                elapsed = (datetime.now(UTC) - last_resolution_check).total_seconds()
+                if elapsed >= RESOLUTION_CHECK_INTERVAL_S:
+                    print(
+                        f"[Resolution] Scheduler firing (elapsed={elapsed:.0f}s)",
+                        flush=True,
+                    )
+                    try:
+                        await self._check_resolutions()
+                    except Exception as exc:
+                        print(f"[BTC Scalp] Resolution check error: {exc}", flush=True)
+                        LOGGER.error("BTC scalp resolution check error: %s", exc)
+                    last_resolution_check = datetime.now(UTC)  # always reset, success OR exception
 
                 await asyncio.sleep(POLL_INTERVAL_S)
 
