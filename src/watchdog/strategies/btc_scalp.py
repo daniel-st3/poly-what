@@ -12,6 +12,7 @@ Price feed priority:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import random
@@ -57,6 +58,7 @@ class BtcScalpStrategy:
         self._pnl: float = 0.0
         self._has_sent_online_ping: bool = False
         self._fired_signals: dict[str, float] = {}  # signal_key → timestamp
+        self._open_risk_cap_notified: bool = False
         _s = get_settings()
         self._tg_token: str | None = _s.telegram_bot_token
         self._tg_chat: str | None = _s.telegram_chat_id
@@ -69,6 +71,130 @@ class BtcScalpStrategy:
         """Fire-and-forget Telegram notification (sync, swallows errors)."""
         from watchdog.notifications.telegram import send_telegram
         send_telegram(msg, self._tg_token, self._tg_chat)
+
+    # ── Paper stats ─────────────────────────────────────────────────────────
+
+    def _btc_paper_stats(self) -> dict[str, Any]:
+        """Query DB for btc_scalp paper trade stats (all-time and today UTC).
+
+        Semantics:
+        - alltime_closed / today_closed: count of ALL closed trades regardless of pnl
+        - wins/losses/be: only from closed trades where pnl is not None
+          (pnl > 0 → win, pnl < 0 → loss, pnl == 0.0 → breakeven)
+        - pnl sums: only from closed trades where pnl is not None
+        """
+        settings = get_settings()
+        engine = build_engine(settings)
+        session_factory = build_session_factory(engine)
+        today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+
+        with session_factory() as session:
+            closed = (
+                session.query(Trade)
+                .filter(
+                    Trade.strategy == "btc_scalp",
+                    Trade.is_paper.is_(True),
+                    Trade.status == "closed",
+                )
+                .all()
+            )
+            open_trades = (
+                session.query(Trade)
+                .filter(
+                    Trade.strategy == "btc_scalp",
+                    Trade.is_paper.is_(True),
+                    Trade.status == "open",
+                )
+                .all()
+            )
+
+        def _as_utc(dt: datetime) -> datetime:
+            return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+        today_closed_list = [
+            t for t in closed
+            if t.closed_at is not None and _as_utc(t.closed_at) >= today_start
+        ]
+
+        def _tally(rows: list[Trade]) -> tuple[float, int, int, int]:
+            """Return (pnl_sum, wins, losses, be) for rows with non-null pnl."""
+            pnl_rows = [t for t in rows if t.pnl is not None]
+            pnl_sum = sum(t.pnl for t in pnl_rows)  # type: ignore[misc]
+            wins = sum(1 for t in pnl_rows if t.pnl > 0)
+            losses = sum(1 for t in pnl_rows if t.pnl < 0)
+            be = sum(1 for t in pnl_rows if t.pnl == 0.0)
+            return pnl_sum, wins, losses, be
+
+        at_pnl, at_wins, at_losses, at_be = _tally(closed)
+        td_pnl, td_wins, td_losses, td_be = _tally(today_closed_list)
+
+        return {
+            "alltime_pnl": at_pnl,
+            "alltime_closed": len(closed),
+            "alltime_wins": at_wins,
+            "alltime_losses": at_losses,
+            "alltime_be": at_be,
+            "today_pnl": td_pnl,
+            "today_closed": len(today_closed_list),
+            "today_wins": td_wins,
+            "today_losses": td_losses,
+            "today_be": td_be,
+            "open_count": len(open_trades),
+            "open_stake": sum(t.size for t in open_trades),
+        }
+
+    def _bankroll_block(self, stats: dict[str, Any]) -> str:
+        """Format the bankroll section for Telegram close notifications."""
+        at_pnl = stats["alltime_pnl"]
+        open_label = "trade" if stats["open_count"] == 1 else "trades"
+        b50_bal = 50.0 + at_pnl
+        b100_bal = 100.0 + at_pnl
+        b50_pct = (at_pnl / 50.0) * 100
+        b100_pct = (at_pnl / 100.0) * 100
+        return (
+            f"📊 Today: {stats['today_closed']} closed"
+            f" | W{stats['today_wins']}/L{stats['today_losses']}/B{stats['today_be']}"
+            f" | Net: ${stats['today_pnl']:+.2f}\n"
+            f"   Open: {stats['open_count']} {open_label} (${stats['open_stake']:.2f} at risk)\n"
+            f"── Paper bankroll (@$2 stake, hypothetical) ──\n"
+            f"  $50  → ${b50_bal:.2f} ({b50_pct:+.1f}%)\n"
+            f"  $100 → ${b100_bal:.2f} ({b100_pct:+.1f}%)"
+        )
+
+    def _check_open_risk_cap(self, session: Any) -> bool:
+        """Return True if opening a new trade would exceed BTC_SCALP_MAX_OPEN_RISK_USD.
+
+        Logs a warning and sends a Telegram notification (at most once per session)
+        when the cap is hit. Returns False (no cap) if env var is unset.
+        """
+        cap = get_settings().btc_scalp_max_open_risk_usd
+        if cap is None:
+            return False
+        open_trades_q = (
+            session.query(Trade)
+            .filter(
+                Trade.strategy == "btc_scalp",
+                Trade.is_paper.is_(True),
+                Trade.status == "open",
+            )
+            .all()
+        )
+        open_stake_total = sum(t.size for t in open_trades_q)
+        if open_stake_total + PAPER_POSITION_SIZE > cap:
+            LOGGER.warning(
+                "BTC SCALP: skipping — open risk $%.2f + $%.2f would exceed cap $%.2f",
+                open_stake_total,
+                PAPER_POSITION_SIZE,
+                cap,
+            )
+            if not self._open_risk_cap_notified:
+                self._notify(
+                    f"⚠️ BTC SCALP: trade skipped — open risk cap ${cap:.0f} reached"
+                    f" (${open_stake_total:.2f} open)"
+                )
+                self._open_risk_cap_notified = True
+            return True
+        return False
 
     # ── Price feed ─────────────────────────────────────────────────────────
 
@@ -352,6 +478,9 @@ class BtcScalpStrategy:
                     LOGGER.debug("BTC SCALP: open trade already exists for %s — skipping", slug)
                     continue
 
+                if self._check_open_risk_cap(session):
+                    continue
+
                 trade = Trade(
                     market_id=market_row.id,
                     signal_id=None,
@@ -369,6 +498,7 @@ class BtcScalpStrategy:
                 session.add(trade)
                 session.commit()
                 self._trades_opened += 1
+                self._open_risk_cap_notified = False
                 LOGGER.info(
                     "BTC SCALP: paper trade opened %s side=%s entry=%.4f our_prob=%.3f",
                     slug,
@@ -417,6 +547,7 @@ class BtcScalpStrategy:
             market_ids = {t.market_id for t in open_trades}
             now = datetime.now(UTC)
             closed_this_run = 0
+            pending_notifications: list[str] = []
 
             for market_id in market_ids:
                 exit_price = 0.0
@@ -473,7 +604,7 @@ class BtcScalpStrategy:
                     self._trades_closed += 1
                     closed_this_run += 1
                     if exit_price == 1.0:
-                        self._notify(
+                        pending_notifications.append(
                             f"🏆 BTC TRADE CLOSED — WIN\n"
                             f"Market: {market.question}\n"
                             f"Side: {trade.side} | Entry: {trade.entry_price:.2f} → Exit: 1.00\n"
@@ -481,7 +612,7 @@ class BtcScalpStrategy:
                             f"Session: {self._trades_closed} closed | Net PnL: ${self._pnl:+.2f}"
                         )
                     else:
-                        self._notify(
+                        pending_notifications.append(
                             f"❌ BTC TRADE CLOSED — LOSS\n"
                             f"Market: {market.question}\n"
                             f"Side: {trade.side} | Entry: {trade.entry_price:.2f} → Exit: 0.00\n"
@@ -517,6 +648,20 @@ class BtcScalpStrategy:
                     )
 
             session.commit()
+
+        if pending_notifications:
+            try:
+                stats = self._btc_paper_stats()
+                bankroll = self._bankroll_block(stats)
+            except Exception as exc:
+                LOGGER.warning("BTC SCALP: could not build bankroll block: %s", exc)
+                bankroll = None
+            for msg in pending_notifications:
+                if bankroll:
+                    self._notify(f"{msg}\n{bankroll}")
+                else:
+                    self._notify(msg)
+
         print(
             f"[Resolution] Checked {n_open} open positions, {closed_this_run} resolved and closed",
             flush=True,
@@ -585,12 +730,15 @@ class BtcScalpStrategy:
         price_task.cancel()  # unreachable but satisfies linters
 
     def get_summary(self) -> dict[str, Any]:
-        return {
+        base: dict[str, Any] = {
             "signals": self._signals,
             "trades_opened": self._trades_opened,
             "trades_closed": self._trades_closed,
             "pnl": self._pnl,
         }
+        with contextlib.suppress(Exception):
+            base.update(self._btc_paper_stats())
+        return base
 
 
 # ── Backtest sanity check ────────────────────────────────────────────────────

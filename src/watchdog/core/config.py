@@ -87,6 +87,7 @@ class Settings(BaseSettings):
     polymarket_private_key: str | None = None
     live_bankroll_usdc: float = Field(default=50.0, ge=1.0, le=1000000.0)
     paper_bankroll_usdc: float = Field(default=500.0, ge=1.0, le=1000000.0)
+    btc_scalp_max_open_risk_usd: float | None = None
 
     # Exit management — tiered thresholds
     take_profit_pct: float = Field(default=0.10, ge=0.01, le=5.0)   # tier-1 TP (50% exit)
