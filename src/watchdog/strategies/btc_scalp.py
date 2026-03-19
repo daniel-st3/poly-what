@@ -68,9 +68,13 @@ class BtcScalpStrategy:
         print("[BTC Scalp] DB initialised ✅", flush=True)
 
     def _notify(self, msg: str) -> None:
-        """Fire-and-forget Telegram notification (sync, swallows errors)."""
+        """Fire-and-forget Telegram notification. Swallows all errors."""
         from watchdog.notifications.telegram import send_telegram
-        send_telegram(msg, self._tg_token, self._tg_chat)
+        try:
+            send_telegram(msg, self._tg_token, self._tg_chat)
+        except Exception as exc:
+            print(f"[Notify] Telegram send failed: {exc}", flush=True)
+            LOGGER.warning("Telegram notification failed: %s", exc)
 
     # ── Paper stats ─────────────────────────────────────────────────────────
 
@@ -695,6 +699,11 @@ class BtcScalpStrategy:
                     self._trades_closed += 1
                     closed_this_run += 1
                     print(
+                        f"[Resolution] trade closed in DB trade_id={trade.id}"
+                        f" slug={market.slug} pnl={pnl:.4f}",
+                        flush=True,
+                    )
+                    print(
                         f"[Gamma] action={'closed_win' if exit_price == 1.0 else 'closed_loss'}"
                         f" slug={market.slug} condition_id={market.condition_id}"
                         f" side={trade.side} outcome={outcome} pnl={pnl:.4f}",
@@ -766,10 +775,12 @@ class BtcScalpStrategy:
                 LOGGER.warning("BTC SCALP: could not build bankroll block: %s", exc)
                 bankroll = None
             for msg in pending_notifications:
-                if bankroll:
-                    self._notify(f"{msg}\n{bankroll}")
-                else:
-                    self._notify(msg)
+                try:
+                    full_msg = f"{msg}\n{bankroll}" if bankroll else msg
+                    self._notify(full_msg)
+                except Exception as exc:
+                    print(f"[Resolution] Notification failed: {exc}", flush=True)
+                    LOGGER.warning("Close notification failed: %s", exc)
 
         print(
             f"[Resolution] Checked {n_open} open positions, {closed_this_run} resolved and closed",
