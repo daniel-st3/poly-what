@@ -533,6 +533,11 @@ class BtcScalpStrategy:
 
         qualified_count = 0
         skipped_cooldown = 0
+        stub_books_seen = 0
+        real_books_seen = 0
+        wide_spread_seen = 0
+        no_ev_seen = 0
+        trade_candidates_seen = 0
         realized_vol = self._get_realized_vol()
 
         for m in btc_markets:
@@ -594,10 +599,14 @@ class BtcScalpStrategy:
             up_best_bid: float | None = None
             up_spread: float | None = None
             up_clob_available = False
+            up_bid_volume: float = 0.0
+            up_ask_volume: float = 0.0
             down_best_ask: float | None = None
             down_best_bid: float | None = None
             down_spread: float | None = None
             down_clob_available = False
+            down_bid_volume: float = 0.0
+            down_ask_volume: float = 0.0
 
             if yes_token_id:
                 try:
@@ -607,6 +616,8 @@ class BtcScalpStrategy:
                     up_best_ask = ob_up["ask"]
                     up_best_bid = ob_up["bid"]
                     up_spread = ob_up["spread"]
+                    up_bid_volume = ob_up.get("bid_volume", 0.0) or 0.0
+                    up_ask_volume = ob_up.get("ask_volume", 0.0) or 0.0
                     up_clob_available = True
                 except Exception as exc:
                     LOGGER.warning("CLOB fetch failed up token %s: %s", yes_token_id[:12], exc)
@@ -619,6 +630,8 @@ class BtcScalpStrategy:
                     down_best_ask = ob_down["ask"]
                     down_best_bid = ob_down["bid"]
                     down_spread = ob_down["spread"]
+                    down_bid_volume = ob_down.get("bid_volume", 0.0) or 0.0
+                    down_ask_volume = ob_down.get("ask_volume", 0.0) or 0.0
                     down_clob_available = True
                 except Exception as exc:
                     LOGGER.warning("CLOB fetch failed down token %s: %s", no_token_id[:12], exc)
@@ -665,6 +678,11 @@ class BtcScalpStrategy:
             provisional_ev = float("-inf")
             side_spread: float | None = None
             side_entry_price: float | None = None
+            is_stub = False
+            side_bid: float | None = None
+            side_ask: float | None = None
+            side_bid_vol: float = 0.0
+            side_ask_vol: float = 0.0
 
             if skip_reason is None:
                 if up_entry_price is None and down_entry_price is None:
@@ -682,12 +700,38 @@ class BtcScalpStrategy:
 
                     side_bid = up_best_bid if provisional_side == "Up" else down_best_bid
                     side_ask = up_best_ask if provisional_side == "Up" else down_best_ask
+                    side_bid_vol = up_bid_volume if provisional_side == "Up" else down_bid_volume
+                    side_ask_vol = up_ask_volume if provisional_side == "Up" else down_ask_volume
                     is_stub = self._is_stub_book(side_bid, side_ask, settings.btc_scalp_min_best_bid)
                     print(
                         f"[Scan] book_check slug={_slug_raw} side={provisional_side}"
-                        f" bid={side_bid} ask={side_ask} spread={side_spread} stub={is_stub}",
+                        f" minutes_left={minutes_left}"
+                        f" bid={side_bid} ask={side_ask} spread={side_spread} stub={is_stub}"
+                        f" bid_vol={side_bid_vol:.4f} ask_vol={side_ask_vol:.4f}",
                         flush=True,
                     )
+                    if not is_stub:
+                        side_token_id = yes_token_id if provisional_side == "Up" else no_token_id
+                        if side_token_id:
+                            try:
+                                levels = await asyncio.to_thread(
+                                    self._clob_client.get_orderbook_levels, side_token_id, 3
+                                )
+                                bids_top3 = levels.get("bids", [])[:3]
+                                asks_top3 = levels.get("asks", [])[:3]
+                                n_bids = len(levels.get("bids", []))
+                                n_asks = len(levels.get("asks", []))
+                                # Values used as-is from API — may be str or float
+                                top_bids_fmt = [(x.get("price"), x.get("size")) for x in bids_top3]
+                                top_asks_fmt = [(x.get("price"), x.get("size")) for x in asks_top3]
+                                print(
+                                    f"[Scan] depth slug={_slug_raw} side={provisional_side}"
+                                    f" n_bids={n_bids} n_asks={n_asks}"
+                                    f" top_bids={top_bids_fmt} top_asks={top_asks_fmt}",
+                                    flush=True,
+                                )
+                            except Exception as exc:
+                                LOGGER.warning("Depth fetch failed %s: %s", _slug_raw, exc)
                     if is_stub:
                         skip_reason = "stub_book"
                     elif self._should_skip_for_spread(side_spread, settings.btc_scalp_max_spread):
@@ -710,6 +754,18 @@ class BtcScalpStrategy:
                 selected_side = provisional_side
                 assert provisional_side is not None  # guaranteed by gate logic above
                 assert side_entry_price is not None
+
+            # ── Per-scan classification counters (after gate fully resolves) ─
+            if skip_reason == "stub_book":
+                stub_books_seen += 1
+            elif skip_reason == "spread_too_wide":
+                wide_spread_seen += 1
+            elif skip_reason == "no_ev":
+                no_ev_seen += 1
+            elif decision == "trade":
+                trade_candidates_seen += 1
+            if provisional_side is not None and not is_stub:
+                real_books_seen += 1
 
             # ── Single-point BtcScanLog write (every in-window candidate) ────
             # Added to the existing session; committed with the normal scan flow.
@@ -866,7 +922,10 @@ class BtcScalpStrategy:
         print(
             f"[BTC Scalp] Scan done — BTC=${btc:,.0f} | momentum={self._get_momentum():.3f}"
             f" | vol={realized_vol:.5f} | markets={len(btc_markets)}"
-            f" | signals={qualified_count} | cooldown_skipped={skipped_cooldown}",
+            f" | signals={qualified_count} | cooldown_skipped={skipped_cooldown}"
+            f" | stub={stub_books_seen} real={real_books_seen}"
+            f" | wide_spread={wide_spread_seen} no_ev={no_ev_seen}"
+            f" | trade_candidates={trade_candidates_seen}",
             flush=True,
         )
 
