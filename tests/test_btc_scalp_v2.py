@@ -168,6 +168,39 @@ def test_select_side_ties_go_up(strategy):
 
 
 # ---------------------------------------------------------------------------
+# _first_usable_quote
+# ---------------------------------------------------------------------------
+
+def test_first_usable_quote_finds_ask_behind_stub(strategy):
+    bids = [{"price": "0.63", "size": "50"}]
+    asks = [{"price": "0.99", "size": "1"}, {"price": "0.64", "size": "80"}]
+    eff_bid, eff_ask = strategy._first_usable_quote(bids, asks, 0.05)
+    assert eff_ask == 0.64
+    assert eff_bid == 0.63
+
+
+def test_first_usable_quote_all_stub(strategy):
+    bids = [{"price": "0.01", "size": "1"}]
+    asks = [{"price": "0.99", "size": "1"}, {"price": "0.96", "size": "1"}]
+    eff_bid, eff_ask = strategy._first_usable_quote(bids, asks, 0.05)
+    assert eff_ask is None
+    assert eff_bid is None
+
+
+def test_first_usable_quote_empty_lists(strategy):
+    eff_bid, eff_ask = strategy._first_usable_quote([], [], 0.05)
+    assert eff_bid is None
+    assert eff_ask is None
+
+
+def test_first_usable_quote_ask_exactly_at_threshold(strategy):
+    """ask == 0.95 is NOT usable (strictly below required)."""
+    asks = [{"price": "0.95", "size": "10"}]
+    eff_bid, eff_ask = strategy._first_usable_quote([], asks, 0.05)
+    assert eff_ask is None
+
+
+# ---------------------------------------------------------------------------
 # _is_stub_book
 # ---------------------------------------------------------------------------
 

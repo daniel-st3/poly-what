@@ -424,6 +424,39 @@ class BtcScalpStrategy:
             return True
         return ask > 0.95
 
+    @staticmethod
+    def _first_usable_quote(
+        bids: list, asks: list, min_bid: float
+    ) -> tuple[float | None, float | None]:
+        """Return (first_usable_bid, first_usable_ask) from sorted depth levels.
+
+        first_usable_ask: lowest ask price strictly below 0.95 (stub threshold)
+        first_usable_bid: highest bid price strictly above min_bid
+
+        Levels are expected as dicts with a 'price' field (str or float).
+        Lists should be sorted: asks ascending by price, bids descending by price.
+        Returns (None, None) if no usable level found on either side.
+        """
+        eff_ask: float | None = None
+        for level in asks:
+            try:
+                p = float(level["price"])
+                if p < 0.95:
+                    eff_ask = p
+                    break
+            except (KeyError, ValueError, TypeError):
+                continue
+        eff_bid: float | None = None
+        for level in bids:
+            try:
+                p = float(level["price"])
+                if p > min_bid:
+                    eff_bid = p
+                    break
+            except (KeyError, ValueError, TypeError):
+                continue
+        return eff_bid, eff_ask
+
     def _parse_clob_token_ids(self, m: dict[str, Any]) -> tuple[str | None, str | None]:
         """Extract yes/no CLOB token IDs from a Gamma market dict.
 
@@ -715,12 +748,14 @@ class BtcScalpStrategy:
                         if side_token_id:
                             try:
                                 levels = await asyncio.to_thread(
-                                    self._clob_client.get_orderbook_levels, side_token_id, 3
+                                    self._clob_client.get_orderbook_levels, side_token_id, 10
                                 )
-                                bids_top3 = levels.get("bids", [])[:3]
-                                asks_top3 = levels.get("asks", [])[:3]
-                                n_bids = len(levels.get("bids", []))
-                                n_asks = len(levels.get("asks", []))
+                                all_bids = levels.get("bids", [])
+                                all_asks = levels.get("asks", [])
+                                bids_top3 = all_bids[:3]
+                                asks_top3 = all_asks[:3]
+                                n_bids = len(all_bids)
+                                n_asks = len(all_asks)
                                 # Values used as-is from API — may be str or float
                                 top_bids_fmt = [(x.get("price"), x.get("size")) for x in bids_top3]
                                 top_asks_fmt = [(x.get("price"), x.get("size")) for x in asks_top3]
@@ -731,6 +766,31 @@ class BtcScalpStrategy:
                                     f" top_bids={top_bids_fmt} top_asks={top_asks_fmt}",
                                     flush=True,
                                 )
+                                # Derive effective executable quote from depth (stub top-of-book only)
+                                if is_stub:
+                                    eff_bid, eff_ask = self._first_usable_quote(
+                                        all_bids, all_asks, settings.btc_scalp_min_best_bid
+                                    )
+                                    eff_spread = (
+                                        round(eff_ask - eff_bid, 6)
+                                        if (eff_bid is not None and eff_ask is not None)
+                                        else None
+                                    )
+                                    print(
+                                        f"[Scan] effective_book slug={_slug_raw} side={provisional_side}"
+                                        f" raw_bid={side_bid} raw_ask={side_ask}"
+                                        f" eff_bid={eff_bid} eff_ask={eff_ask} eff_spread={eff_spread}",
+                                        flush=True,
+                                    )
+                                    if eff_ask is not None:
+                                        # Override with executable depth price — not a stub skip
+                                        is_stub = False
+                                        side_entry_price = eff_ask
+                                        side_spread = eff_spread
+                                        provisional_ev = self._ev_buy_yes(
+                                            p_up if provisional_side == "Up" else 1.0 - p_up,
+                                            eff_ask,
+                                        )
                             except Exception as exc:
                                 LOGGER.warning("Depth fetch failed %s: %s", _slug_raw, exc)
                     if is_stub:
