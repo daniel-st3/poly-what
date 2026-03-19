@@ -665,6 +665,13 @@ class BtcScalpStrategy:
                         side_spread = down_spread
                         side_entry_price = down_entry_price
 
+                    print(
+                        f"[Scan] spread_check slug={_slug_raw} side={provisional_side}"
+                        f" p_up={p_up:.4f} ev_up={ev_up:.4f} ev_down={ev_down:.4f}"
+                        f" up_bid={up_best_bid} up_ask={up_best_ask} up_spread={up_spread}"
+                        f" down_bid={down_best_bid} down_ask={down_best_ask} down_spread={down_spread}",
+                        flush=True,
+                    )
                     if self._should_skip_for_spread(side_spread, settings.btc_scalp_max_spread):
                         skip_reason = "spread_too_wide"
                     elif provisional_ev < settings.btc_scalp_min_ev_per_contract:
@@ -674,7 +681,8 @@ class BtcScalpStrategy:
                 print(
                     f"[Scan] skip slug={_slug_raw} reason={skip_reason}"
                     f" p_up={p_up:.4f} ev_up={ev_up:.4f} ev_down={ev_down:.4f}"
-                    f" up_spread={up_spread} down_spread={down_spread}",
+                    f" up_bid={up_best_bid} up_ask={up_best_ask} up_spread={up_spread}"
+                    f" down_bid={down_best_bid} down_ask={down_best_ask} down_spread={down_spread}",
                     flush=True,
                 )
                 # decision stays 'skip', selected_side stays None
