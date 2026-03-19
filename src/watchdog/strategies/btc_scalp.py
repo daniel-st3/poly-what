@@ -710,7 +710,7 @@ class BtcScalpStrategy:
                         f" bid_vol={side_bid_vol:.4f} ask_vol={side_ask_vol:.4f}",
                         flush=True,
                     )
-                    if not is_stub:
+                    if (not is_stub) or (side_bid_vol > 0) or (side_ask_vol > 0):
                         side_token_id = yes_token_id if provisional_side == "Up" else no_token_id
                         if side_token_id:
                             try:
@@ -726,6 +726,7 @@ class BtcScalpStrategy:
                                 top_asks_fmt = [(x.get("price"), x.get("size")) for x in asks_top3]
                                 print(
                                     f"[Scan] depth slug={_slug_raw} side={provisional_side}"
+                                    f" stub={is_stub} minutes_left={minutes_left}"
                                     f" n_bids={n_bids} n_asks={n_asks}"
                                     f" top_bids={top_bids_fmt} top_asks={top_asks_fmt}",
                                     flush=True,
