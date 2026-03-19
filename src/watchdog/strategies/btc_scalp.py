@@ -409,6 +409,21 @@ class BtcScalpStrategy:
         """
         return spread is not None and spread > max_spread
 
+    @staticmethod
+    def _is_stub_book(bid: float | None, ask: float | None, min_best_bid: float) -> bool:
+        """Return True when the book is effectively non-tradable / stubbed.
+
+        Criteria:
+          - bid or ask is None (no data)
+          - bid < min_best_bid (placeholder stub quote, e.g. 0.01)
+          - ask > 0.95 (stub ask on the far side)
+        """
+        if bid is None or ask is None:
+            return True
+        if bid < min_best_bid:
+            return True
+        return ask > 0.95
+
     def _parse_clob_token_ids(self, m: dict[str, Any]) -> tuple[str | None, str | None]:
         """Extract yes/no CLOB token IDs from a Gamma market dict.
 
@@ -665,14 +680,17 @@ class BtcScalpStrategy:
                         side_spread = down_spread
                         side_entry_price = down_entry_price
 
+                    side_bid = up_best_bid if provisional_side == "Up" else down_best_bid
+                    side_ask = up_best_ask if provisional_side == "Up" else down_best_ask
+                    is_stub = self._is_stub_book(side_bid, side_ask, settings.btc_scalp_min_best_bid)
                     print(
-                        f"[Scan] spread_check slug={_slug_raw} side={provisional_side}"
-                        f" p_up={p_up:.4f} ev_up={ev_up:.4f} ev_down={ev_down:.4f}"
-                        f" up_bid={up_best_bid} up_ask={up_best_ask} up_spread={up_spread}"
-                        f" down_bid={down_best_bid} down_ask={down_best_ask} down_spread={down_spread}",
+                        f"[Scan] book_check slug={_slug_raw} side={provisional_side}"
+                        f" bid={side_bid} ask={side_ask} spread={side_spread} stub={is_stub}",
                         flush=True,
                     )
-                    if self._should_skip_for_spread(side_spread, settings.btc_scalp_max_spread):
+                    if is_stub:
+                        skip_reason = "stub_book"
+                    elif self._should_skip_for_spread(side_spread, settings.btc_scalp_max_spread):
                         skip_reason = "spread_too_wide"
                     elif provisional_ev < settings.btc_scalp_min_ev_per_contract:
                         skip_reason = "no_ev"

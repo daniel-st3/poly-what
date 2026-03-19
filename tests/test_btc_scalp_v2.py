@@ -168,6 +168,26 @@ def test_select_side_ties_go_up(strategy):
 
 
 # ---------------------------------------------------------------------------
+# _is_stub_book
+# ---------------------------------------------------------------------------
+
+def test_is_stub_book_none_bid(strategy):
+    assert strategy._is_stub_book(None, 0.5, 0.05) is True
+
+
+def test_is_stub_book_stub_quotes(strategy):
+    assert strategy._is_stub_book(0.01, 0.99, 0.05) is True
+
+
+def test_is_stub_book_real_book(strategy):
+    assert strategy._is_stub_book(0.10, 0.92, 0.05) is False
+
+
+def test_is_stub_book_ask_too_high(strategy):
+    assert strategy._is_stub_book(0.10, 0.96, 0.05) is True
+
+
+# ---------------------------------------------------------------------------
 # _should_skip_for_spread
 # ---------------------------------------------------------------------------
 
