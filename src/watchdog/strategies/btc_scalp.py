@@ -403,10 +403,21 @@ class BtcScalpStrategy:
 
             minutes_left = (end_dt - now).total_seconds() / 60
             if not (1.5 <= minutes_left <= 8.0):
+                print(
+                    f"[Scan] skip slug={m.get('slug') or m.get('conditionId') or '?'}"
+                    f" minutes_left={minutes_left:.1f} (outside 1.5-8.0min)",
+                    flush=True,
+                )
                 continue
 
             signal = self._compute_signal(m)
             if signal is None:
+                print(
+                    f"[Scan] no_edge slug={m.get('slug') or m.get('conditionId') or '?'}"
+                    f" momentum={self._get_momentum():.4f}"
+                    f" minutes_left={minutes_left:.1f}",
+                    flush=True,
+                )
                 continue
 
             side, edge, our_prob, market_price = signal
