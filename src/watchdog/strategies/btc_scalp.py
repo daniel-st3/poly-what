@@ -1,12 +1,23 @@
 """
-BTC intraday scalp strategy.
+BTC intraday scalp strategy — V2.
+
 Connects to Coinbase Advanced Trade WebSocket for live BTC price,
 polls Polymarket Gamma API every 5s for near-expiry BTC markets,
-and paper-trades when certainty_score > 0.90 with 8c+ edge.
+and paper-trades using a fee-aware EV model anchored to a start-price proxy.
 
 Price feed priority:
   1. Coinbase Advanced Trade WebSocket (wss://advanced-trade-ws.coinbase.com) — no geo-block
   2. CoinGecko HTTP fallback (30s intervals) — if WebSocket fails 3 consecutive times
+
+V2 probability model:
+  z = log(current_price / start_price_proxy)
+      / max(vol_per_sqrt_min * sqrt(time_left_min / 5.0), vol_floor)
+  p_up = normal_cdf(z) + momentum * weight   (clamped 0.01-0.99)
+  EV_buy_up = p_up - ask_up                  (per $1-payout contract)
+
+NOTE: start_price_proxy is the BTC/USD price captured when the market first
+entered the active trading window — NOT the Chainlink on-chain reference used
+by Polymarket for final settlement. See BtcScanLog docstring.
 """
 
 from __future__ import annotations
@@ -15,6 +26,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import random
 import re
 import time
@@ -28,8 +40,9 @@ import websockets
 
 from watchdog.core.config import get_settings
 from watchdog.db.init import init_db
-from watchdog.db.models import BtcSignalLog, Market, Trade
+from watchdog.db.models import BtcScanLog, BtcSignalLog, Market, Trade
 from watchdog.db.session import build_engine, build_session_factory
+from watchdog.market_data.polymarket_rest import PolymarketRestClient
 
 LOGGER = logging.getLogger(__name__)
 
@@ -40,12 +53,13 @@ WS_MAX_FAILURES = 3
 HTTP_FALLBACK_INTERVAL_S = 30
 POLL_INTERVAL_S = 5
 RESOLUTION_CHECK_INTERVAL_S = 60
-CERTAINTY_THRESHOLD = 0.90
-EDGE_THRESHOLD = 0.08
-MIN_EDGE = 0.10
 PAPER_POSITION_SIZE = 2.0
-NEAR_EXPIRY_MINUTES = 12
 SIGNAL_COOLDOWN_S = 90.0
+CLOB_FETCH_TIMEOUT = 4.0   # seconds for synchronous CLOB call via asyncio.to_thread
+# V1 legacy constants — kept for backward-compat with _compute_signal() and backtest helpers
+_V1_MIN_EDGE = 0.10
+_V1_CERTAINTY_THRESHOLD = 0.90
+_V1_EDGE_THRESHOLD = 0.08
 
 
 class BtcScalpStrategy:
@@ -59,6 +73,10 @@ class BtcScalpStrategy:
         self._has_sent_online_ping: bool = False
         self._fired_signals: dict[str, float] = {}  # signal_key → timestamp
         self._open_risk_cap_notified: bool = False
+        # Per-window start prices: slug → (btc_price, captured_at_utc)
+        self._window_start_prices: dict[str, tuple[float, datetime]] = {}
+        # Single reused CLOB client — do NOT reinstantiate per scan cycle
+        self._clob_client = PolymarketRestClient(timeout=CLOB_FETCH_TIMEOUT)
         _s = get_settings()
         self._tg_token: str | None = _s.telegram_bot_token
         self._tg_chat: str | None = _s.telegram_chat_id
@@ -298,6 +316,117 @@ class BtcScalpStrategy:
         change = (recent[-1] - recent[0]) / recent[0]
         return max(-1.0, min(1.0, change * 100))  # scale % change to -1..1
 
+    # ── V2 probability and EV helpers ───────────────────────────────────────
+
+    def _get_realized_vol(self) -> float:
+        """Return a per-sqrt-minute local vol proxy from recent BTC price history.
+
+        Computes log-return std dev from price_history (5s samples), scales to
+        per-sqrt-minute. NOT annualized — a short-horizon proxy only.
+        Floors at btc_scalp_vol_floor to prevent division-by-zero in z-score.
+        """
+        prices = list(self._price_history)
+        if len(prices) < 3:
+            return get_settings().btc_scalp_vol_floor
+        log_returns = [
+            math.log(prices[i] / prices[i - 1])
+            for i in range(1, len(prices))
+            if prices[i - 1] > 0
+        ]
+        if len(log_returns) < 2:
+            return get_settings().btc_scalp_vol_floor
+        n = len(log_returns)
+        mean = sum(log_returns) / n
+        variance = sum((r - mean) ** 2 for r in log_returns) / (n - 1)
+        vol_per_5s = math.sqrt(variance)
+        vol_per_minute = vol_per_5s * math.sqrt(12)  # 12 x 5s intervals = 1 minute
+        return max(vol_per_minute, get_settings().btc_scalp_vol_floor)
+
+    @staticmethod
+    def _normal_cdf_approx(z: float) -> float:
+        """Approximate standard normal CDF using Abramowitz & Stegun (formula 26.2.17).
+
+        Accurate to ~1.5e-7. No scipy dependency.
+        """
+        t = 1.0 / (1.0 + 0.2316419 * abs(z))
+        poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937
+               + t * (-1.821255978 + t * 1.330274429))))
+        pdf = math.exp(-0.5 * z * z) / math.sqrt(2 * math.pi)
+        cdf = 1.0 - pdf * poly
+        return cdf if z >= 0 else 1.0 - cdf
+
+    def _p_up_model(
+        self,
+        start_price_proxy: float,
+        current_price: float,
+        time_left_min: float,
+        realized_vol: float,
+    ) -> float:
+        """Estimate P(BTC >= start_price_proxy at expiry) via a diffusion-style z-score proxy.
+
+        z = log(current / start) / (vol_per_sqrt_min * sqrt(time_left / 5.0))
+
+        This is a diffusion-style z-score heuristic, NOT a true Brownian bridge
+        (we do not condition on terminal settlement structure). start_price_proxy
+        is a captured-price proxy — see BtcScanLog docstring for limitations.
+
+        Structurally compatible with exact Chainlink integration: replace
+        start_price_proxy with the true Chainlink reference price when available.
+        """
+        settings = get_settings()
+        if start_price_proxy <= 0 or current_price <= 0:
+            return 0.5
+        log_ret = math.log(current_price / start_price_proxy)
+        time_factor = math.sqrt(max(time_left_min, 0.1) / 5.0)
+        denominator = max(realized_vol * time_factor, settings.btc_scalp_vol_floor)
+        z = log_ret / denominator
+        p_up = self._normal_cdf_approx(z)
+        momentum = self._get_momentum()
+        weight = settings.btc_scalp_momentum_adjust_weight
+        return max(0.01, min(0.99, p_up + momentum * weight))
+
+    @staticmethod
+    def _ev_buy_yes(prob: float, ask: float) -> float:
+        """EV per $1-payout contract of buying YES at `ask` given win probability `prob`.
+
+        EV = prob * (1 - ask) - (1 - prob) * ask = prob - ask
+
+        Per-contract, not per dollar of stake. Compare against
+        btc_scalp_min_ev_per_contract (not against PAPER_POSITION_SIZE).
+        """
+        return prob - ask
+
+    @staticmethod
+    def _select_side(ev_up: float, ev_down: float) -> str:
+        """Return 'Up' if ev_up >= ev_down, else 'Down'."""
+        return "Up" if ev_up >= ev_down else "Down"
+
+    @staticmethod
+    def _should_skip_for_spread(spread: float | None, max_spread: float) -> bool:
+        """Return True if spread exceeds threshold.
+
+        None spread means CLOB was unavailable — that is not a spread skip.
+        """
+        return spread is not None and spread > max_spread
+
+    def _parse_clob_token_ids(self, m: dict[str, Any]) -> tuple[str | None, str | None]:
+        """Extract yes/no CLOB token IDs from a Gamma market dict.
+
+        Handles: JSON string, list, empty string, malformed JSON, non-list decoded value.
+        Returns (yes_token_id, no_token_id) — either may be None.
+        """
+        raw = m.get("clobTokenIds") or []
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                raw = []
+        if not isinstance(raw, list):
+            raw = []
+        yes_id = str(raw[0]) if len(raw) > 0 and raw[0] else None
+        no_id = str(raw[1]) if len(raw) > 1 and raw[1] else None
+        return yes_id, no_id
+
     def _compute_signal(
         self, market: dict[str, Any]
     ) -> tuple[str, float, float, float] | None:
@@ -320,9 +449,9 @@ class BtcScalpStrategy:
         up_edge = our_up_prob - up_price
         down_edge = our_down_prob - down_price
 
-        if up_edge > MIN_EDGE:
+        if up_edge > _V1_MIN_EDGE:
             return ("Up", up_edge, our_up_prob, up_price)
-        if down_edge > MIN_EDGE:
+        if down_edge > _V1_MIN_EDGE:
             return ("Down", down_edge, our_down_prob, down_price)
         return None
 
@@ -389,6 +518,8 @@ class BtcScalpStrategy:
 
         qualified_count = 0
         skipped_cooldown = 0
+        realized_vol = self._get_realized_vol()
+
         for m in btc_markets:
             question = m.get("question") or ""
 
@@ -405,69 +536,161 @@ class BtcScalpStrategy:
             except ValueError:
                 continue
 
-            minutes_left = (end_dt - now).total_seconds() / 60
-            if not (1.5 <= minutes_left <= 8.0):
+            minutes_left = round((end_dt - now).total_seconds() / 60, 3)
+            if not (settings.btc_scalp_min_minutes_left <= minutes_left
+                    <= settings.btc_scalp_max_minutes_left):
                 print(
                     f"[Scan] skip slug={m.get('slug') or m.get('conditionId') or '?'}"
-                    f" minutes_left={minutes_left:.1f} (outside 1.5-8.0min)",
+                    f" minutes_left={minutes_left} (outside window)",
                     flush=True,
                 )
                 continue
 
-            signal = self._compute_signal(m)
-            if signal is None:
+            # ── Per-market variables — all initialized before any branch ──────
+            _slug_raw = m.get("slug") or m.get("conditionId") or "?"
+            skip_reason: str | None = None
+            decision = "skip"
+            selected_side: str | None = None
+
+            # Capture start_price_proxy when market first enters window
+            if _slug_raw not in self._window_start_prices and self._btc_price is not None:
+                self._window_start_prices[_slug_raw] = (self._btc_price, now)
                 print(
-                    f"[Scan] no_edge slug={m.get('slug') or m.get('conditionId') or '?'}"
-                    f" momentum={self._get_momentum():.4f}"
-                    f" minutes_left={minutes_left:.1f}",
+                    f"[Scan] start_price_proxy captured slug={_slug_raw}"
+                    f" price={self._btc_price:,.2f}",
                     flush=True,
                 )
-                continue
+            start_entry = self._window_start_prices.get(_slug_raw)
+            start_price_proxy: float | None = start_entry[0] if start_entry else None
+            start_price_captured_at: datetime | None = start_entry[1] if start_entry else None
 
-            side, edge, our_prob, market_price = signal
-            slug = m.get("slug") or m.get("conditionId") or f"btc-scalp-{int(now.timestamp())}"
-            signal_key = f"{m.get('conditionId', slug)}-{side}"
+            # Parse Gamma mid prices
+            try:
+                outcome_prices = json.loads(m.get("outcomePrices") or '["0.5","0.5"]')
+                up_price_mid = float(outcome_prices[0])
+            except (ValueError, IndexError, TypeError):
+                up_price_mid = 0.5
+            # Binary market identity: down = 1 - up (mutually exclusive binary outcomes)
+            down_price_mid = 1.0 - up_price_mid
 
-            # Purge expired cooldown entries, then check
-            now_ts = time.time()
-            self._fired_signals = {
-                k: v for k, v in self._fired_signals.items()
-                if now_ts - v < SIGNAL_COOLDOWN_S
-            }
-            if signal_key in self._fired_signals:
-                skipped_cooldown += 1
-                continue
-            self._fired_signals[signal_key] = now_ts
+            # CLOB fetch (per side, independent availability)
+            yes_token_id, no_token_id = self._parse_clob_token_ids(m)
+            up_best_ask: float | None = None
+            up_best_bid: float | None = None
+            up_spread: float | None = None
+            up_clob_available = False
+            down_best_ask: float | None = None
+            down_best_bid: float | None = None
+            down_spread: float | None = None
+            down_clob_available = False
 
-            self._signals += 1
-            qualified_count += 1
-            liquidity = float(m.get("liquidity") or 0)
+            if yes_token_id:
+                try:
+                    ob_up = await asyncio.to_thread(
+                        self._clob_client.get_orderbook, yes_token_id
+                    )
+                    up_best_ask = ob_up["ask"]
+                    up_best_bid = ob_up["bid"]
+                    up_spread = ob_up["spread"]
+                    up_clob_available = True
+                except Exception as exc:
+                    LOGGER.warning("CLOB fetch failed up token %s: %s", yes_token_id[:12], exc)
 
-            print(
-                f"⚡ UP/DOWN SIGNAL | BTC=${btc:,.0f} | side={side} | "
-                f"edge={edge:.2f} | our={our_prob:.2f} | mkt={market_price:.2f} | "
-                f"liq=${liquidity:,.0f} | expires={minutes_left:.1f}min",
-                flush=True,
-            )
+            if no_token_id:
+                try:
+                    ob_down = await asyncio.to_thread(
+                        self._clob_client.get_orderbook, no_token_id
+                    )
+                    down_best_ask = ob_down["ask"]
+                    down_best_bid = ob_down["bid"]
+                    down_spread = ob_down["spread"]
+                    down_clob_available = True
+                except Exception as exc:
+                    LOGGER.warning("CLOB fetch failed down token %s: %s", no_token_id[:12], exc)
 
+            # Resolve entry price per side (side-specific CLOB requirement)
+            if up_clob_available:
+                up_entry_price: float | None = up_best_ask
+            elif not settings.btc_scalp_require_clob:
+                up_entry_price = up_price_mid   # permissive midpoint fallback (paper only)
+                LOGGER.warning("Using up midpoint fallback for %s", _slug_raw)
+            else:
+                up_entry_price = None
+
+            if down_clob_available:
+                down_entry_price: float | None = down_best_ask
+            elif not settings.btc_scalp_require_clob:
+                down_entry_price = down_price_mid
+                LOGGER.warning("Using down midpoint fallback for %s", _slug_raw)
+            else:
+                down_entry_price = None
+
+            # EV model — compute for available sides; float("-inf") makes unavailable side lose
+            if start_price_proxy is None:
+                skip_reason = "missing_start_price_proxy"
+                # p_up_model returns 0.5 on None, but we skip rather than silently use 0.5
+                p_up = 0.5
+                ev_up = float("-inf")
+                ev_down = float("-inf")
+            else:
+                p_up = self._p_up_model(start_price_proxy, btc, minutes_left, realized_vol)
+                ev_up = (
+                    self._ev_buy_yes(p_up, up_entry_price)
+                    if up_entry_price is not None
+                    else float("-inf")
+                )
+                ev_down = (
+                    self._ev_buy_yes(1.0 - p_up, down_entry_price)
+                    if down_entry_price is not None
+                    else float("-inf")
+                )
+
+            # Skip gate — evaluated on the provisional winning side only
+            provisional_side: str | None = None
+            provisional_ev = float("-inf")
+            side_spread: float | None = None
+            side_entry_price: float | None = None
+
+            if skip_reason is None:
+                if up_entry_price is None and down_entry_price is None:
+                    skip_reason = "missing_clob"
+                else:
+                    provisional_side = self._select_side(ev_up, ev_down)
+                    if provisional_side == "Up":
+                        provisional_ev = ev_up
+                        side_spread = up_spread
+                        side_entry_price = up_entry_price
+                    else:
+                        provisional_ev = ev_down
+                        side_spread = down_spread
+                        side_entry_price = down_entry_price
+
+                    if self._should_skip_for_spread(side_spread, settings.btc_scalp_max_spread):
+                        skip_reason = "spread_too_wide"
+                    elif provisional_ev < settings.btc_scalp_min_ev_per_contract:
+                        skip_reason = "no_ev"
+
+            if skip_reason:
+                print(
+                    f"[Scan] skip slug={_slug_raw} reason={skip_reason}"
+                    f" p_up={p_up:.4f} ev_up={ev_up:.4f} ev_down={ev_down:.4f}"
+                    f" up_spread={up_spread} down_spread={down_spread}",
+                    flush=True,
+                )
+                # decision stays 'skip', selected_side stays None
+            else:
+                # Passed all gates — prepare trade
+                decision = "trade"
+                selected_side = provisional_side
+                assert provisional_side is not None  # guaranteed by gate logic above
+                assert side_entry_price is not None
+
+            # ── Single-point BtcScanLog write (every in-window candidate) ────
+            # Added to the existing session; committed with the normal scan flow.
+            # No early continue above this point.
             with session_factory() as session:
-                # ── Signal audit log ────────────────────────────────────────
-                session.add(BtcSignalLog(
-                    logged_at=now,
-                    market_slug=slug,
-                    question=question,
-                    side=side,
-                    edge=edge,
-                    time_left_min=minutes_left,
-                    our_estimate=our_prob,
-                    market_price=market_price,
-                    momentum=self._get_momentum(),
-                    btc_price=btc,
-                    liquidity=liquidity,
-                    outcome=None,
-                ))
-                session.flush()
-
+                # Ensure Market row exists (needed for market_id FK)
+                slug = m.get("slug") or m.get("conditionId") or f"btc-scalp-{int(now.timestamp())}"
                 market_row = session.query(Market).filter_by(slug=slug).first()
                 if market_row is None:
                     market_row = Market(
@@ -480,6 +703,66 @@ class BtcScalpStrategy:
                     session.add(market_row)
                     session.flush()
 
+                session.add(BtcScanLog(
+                    timestamp_utc=now,
+                    slug=slug,
+                    market_id=market_row.id,
+                    minutes_left=minutes_left,
+                    start_price_proxy=start_price_proxy,
+                    start_price_captured_at=start_price_captured_at,
+                    current_price=btc,
+                    realized_vol=realized_vol,
+                    momentum_60s=self._get_momentum(),
+                    up_price_mid=up_price_mid,
+                    up_best_ask=up_best_ask,
+                    up_best_bid=up_best_bid,
+                    up_spread=up_spread,
+                    up_clob_available=up_clob_available,
+                    down_price_mid=down_price_mid,
+                    down_best_ask=down_best_ask,
+                    down_best_bid=down_best_bid,
+                    down_spread=down_spread,
+                    down_clob_available=down_clob_available,
+                    p_up_model=p_up,
+                    ev_up=ev_up if ev_up != float("-inf") else -999.0,
+                    ev_down=ev_down if ev_down != float("-inf") else -999.0,
+                    decision=decision,
+                    selected_side=selected_side,  # None on skip, 'Up'/'Down' on trade
+                    skip_reason=skip_reason,
+                ))
+
+                if decision == "skip":
+                    session.commit()
+                    continue  # only continue AFTER the log write
+
+                # ── Trade candidate — announce and gate ──────────────────────
+                assert provisional_side is not None
+                assert side_entry_price is not None
+                side = provisional_side
+                entry_price = side_entry_price
+                liquidity = float(m.get("liquidity") or 0)
+
+                print(
+                    f"[Scan] trade_candidate slug={slug} side={side}"
+                    f" p_up={p_up:.4f} ev_up={ev_up:.4f} ev_down={ev_down:.4f}"
+                    f" ask={entry_price:.4f} spread={side_spread}",
+                    flush=True,
+                )
+
+                # Cooldown check
+                signal_key = f"{m.get('conditionId', slug)}-{side}"
+                now_ts = time.time()
+                self._fired_signals = {
+                    k: v for k, v in self._fired_signals.items()
+                    if now_ts - v < SIGNAL_COOLDOWN_S
+                }
+                if signal_key in self._fired_signals:
+                    skipped_cooldown += 1
+                    session.commit()
+                    continue
+                self._fired_signals[signal_key] = now_ts
+
+                # Existing open trade check
                 existing = (
                     session.query(Trade)
                     .filter(
@@ -491,19 +774,37 @@ class BtcScalpStrategy:
                 )
                 if existing:
                     LOGGER.debug("BTC SCALP: open trade already exists for %s — skipping", slug)
+                    session.commit()
                     continue
 
                 if self._check_open_risk_cap(session):
+                    session.commit()
                     continue
+
+                # ── Open paper trade ─────────────────────────────────────────
+                session.add(BtcSignalLog(
+                    logged_at=now,
+                    market_slug=slug,
+                    question=question,
+                    side=side,
+                    edge=provisional_ev,
+                    time_left_min=minutes_left,
+                    our_estimate=p_up if side == "Up" else 1.0 - p_up,
+                    market_price=entry_price,
+                    momentum=self._get_momentum(),
+                    btc_price=btc,
+                    liquidity=liquidity,
+                    outcome=None,
+                ))
 
                 trade = Trade(
                     market_id=market_row.id,
                     signal_id=None,
                     side=side,
                     size=PAPER_POSITION_SIZE,
-                    entry_price=market_price,
+                    entry_price=entry_price,
                     kelly_fraction=0.0,
-                    confidence_score=our_prob,
+                    confidence_score=p_up if side == "Up" else 1.0 - p_up,
                     is_paper=True,
                     status="open",
                     opened_at=now,
@@ -512,27 +813,34 @@ class BtcScalpStrategy:
                 )
                 session.add(trade)
                 session.commit()
+                self._signals += 1
                 self._trades_opened += 1
+                qualified_count += 1
                 self._open_risk_cap_notified = False
                 LOGGER.info(
-                    "BTC SCALP: paper trade opened %s side=%s entry=%.4f our_prob=%.3f",
-                    slug,
-                    side,
-                    market_price,
-                    our_prob,
+                    "BTC SCALP: paper trade opened %s side=%s entry=%.4f p_up=%.3f ev=%.4f",
+                    slug, side, entry_price, p_up, provisional_ev,
                 )
-                # Notify AFTER confirmed DB write
                 self._notify(
                     f"✅ BTC TRADE OPENED\n"
                     f"Market: {question}\n"
-                    f"Side: {side} | Entry: {market_price:.2f}\n"
-                    f"Edge: {edge:.2f} | Our est: {our_prob:.2f}\n"
+                    f"Side: {side} | Entry: {entry_price:.2f}\n"
+                    f"EV: {provisional_ev:.4f} | p_up: {p_up:.3f}\n"
                     f"Time left: {minutes_left:.1f} min"
                 )
 
+        # Evict stale window start prices (slugs no longer in current scan)
+        active_slugs = {m.get("slug") or m.get("conditionId") or "?" for m in btc_markets}
+        self._window_start_prices = {
+            k: v for k, v in self._window_start_prices.items() if k in active_slugs
+        }
+        # Note: if Gamma transiently omits a market, proxy may be evicted early.
+        # Acceptable V2 limitation; evict-by-age can be added later.
+
         print(
-            f"[BTC Scalp] Scan done — BTC=${btc:,.0f} | momentum={self._get_momentum():.3f} | "
-            f"markets={len(btc_markets)} | signals={qualified_count} | cooldown_skipped={skipped_cooldown}",
+            f"[BTC Scalp] Scan done — BTC=${btc:,.0f} | momentum={self._get_momentum():.3f}"
+            f" | vol={realized_vol:.5f} | markets={len(btc_markets)}"
+            f" | signals={qualified_count} | cooldown_skipped={skipped_cooldown}",
             flush=True,
         )
 
@@ -906,13 +1214,13 @@ def btc_scalp_backtest() -> None:
         for offset in strike_offsets:
             strike = btc * (1.0 + offset)
             score, side = _strategy._compute_certainty(btc, strike)
-            if score <= CERTAINTY_THRESHOLD:
+            if score <= _V1_CERTAINTY_THRESHOLD:
                 continue
 
             # Synthetic ask: market prices slightly below certainty (realistic taker spread)
             synthetic_ask = score - rng.uniform(0.06, 0.14)
             edge = score - synthetic_ask
-            if edge < EDGE_THRESHOLD:
+            if edge < _V1_EDGE_THRESHOLD:
                 continue
 
             signals += 1

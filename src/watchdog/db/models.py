@@ -287,3 +287,56 @@ class BtcSignalLog(Base):
     btc_price: Mapped[float] = mapped_column(Float)        # BTC/USD at signal time
     liquidity: Mapped[float] = mapped_column(Float, default=0.0)
     outcome: Mapped[str | None] = mapped_column(String(8), nullable=True)  # 'WIN'/'LOSS'/NULL
+
+
+class BtcScanLog(Base):
+    """Per-scan-cycle market record for offline EV and calibration analysis.
+
+    Written for every in-window market candidate, regardless of trade decision.
+
+    IMPORTANT: start_price_proxy is the BTC/USD price captured when the market
+    first entered the active trading window. It is NOT the Chainlink on-chain
+    reference price used by Polymarket for final settlement. Use this data for
+    offline paper evaluation only — it may differ from the true contract anchor.
+    start_price_captured_at records when the proxy was captured so lag can be
+    measured post-hoc.
+
+    down_price_mid = 1 - up_price_mid (binary market identity assumption;
+    valid only for mutually exclusive binary outcomes).
+    """
+
+    __tablename__ = "btc_scan_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    slug: Mapped[str] = mapped_column(String(255), index=True)
+    market_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("markets.id"), nullable=True)
+    minutes_left: Mapped[float] = mapped_column(Float)
+    # Proxy pricing — see class docstring
+    start_price_proxy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    start_price_captured_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    current_price: Mapped[float] = mapped_column(Float)
+    realized_vol: Mapped[float] = mapped_column(Float)
+    momentum_60s: Mapped[float] = mapped_column(Float)
+    # Up-side CLOB data
+    up_price_mid: Mapped[float] = mapped_column(Float)
+    up_best_ask: Mapped[float | None] = mapped_column(Float, nullable=True)
+    up_best_bid: Mapped[float | None] = mapped_column(Float, nullable=True)
+    up_spread: Mapped[float | None] = mapped_column(Float, nullable=True)
+    up_clob_available: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Down-side CLOB data (binary identity: down_price_mid = 1 - up_price_mid)
+    down_price_mid: Mapped[float | None] = mapped_column(Float, nullable=True)
+    down_best_ask: Mapped[float | None] = mapped_column(Float, nullable=True)
+    down_best_bid: Mapped[float | None] = mapped_column(Float, nullable=True)
+    down_spread: Mapped[float | None] = mapped_column(Float, nullable=True)
+    down_clob_available: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Model outputs
+    p_up_model: Mapped[float] = mapped_column(Float)
+    ev_up: Mapped[float] = mapped_column(Float)
+    ev_down: Mapped[float] = mapped_column(Float)
+    # Decision
+    decision: Mapped[str] = mapped_column(String(16))           # 'trade' or 'skip'
+    selected_side: Mapped[str | None] = mapped_column(String(8), nullable=True)  # 'Up'/'Down'/None
+    skip_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)

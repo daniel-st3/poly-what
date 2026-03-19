@@ -88,6 +88,13 @@ class Settings(BaseSettings):
     live_bankroll_usdc: float = Field(default=50.0, ge=1.0, le=1000000.0)
     paper_bankroll_usdc: float = Field(default=500.0, ge=1.0, le=1000000.0)
     btc_scalp_max_open_risk_usd: float | None = None
+    btc_scalp_min_ev_per_contract: float = 0.01        # EV threshold per $1-payout contract; see _ev_buy_yes()
+    btc_scalp_max_spread: float = 0.03                 # reject trade side if that side's CLOB spread exceeds this
+    btc_scalp_min_minutes_left: float = 0.5            # only trade when >= this many minutes to expiry
+    btc_scalp_max_minutes_left: float = 4.5            # only trade when <= this many minutes to expiry
+    btc_scalp_vol_floor: float = 0.001                 # denominator floor for z-score (prevents div-by-zero)
+    btc_scalp_momentum_adjust_weight: float = 0.05     # small momentum nudge added to model prob (0 = off)
+    btc_scalp_require_clob: bool = True                # if True, skip entry when CLOB executable price unavailable
 
     # Exit management — tiered thresholds
     take_profit_pct: float = Field(default=0.10, ge=0.01, le=5.0)   # tier-1 TP (50% exit)
