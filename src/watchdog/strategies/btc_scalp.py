@@ -461,6 +461,13 @@ class BtcScalpStrategy:
     def _parse_clob_token_ids(self, m: dict[str, Any]) -> tuple[str | None, str | None]:
         """Extract yes/no CLOB token IDs from a Gamma market dict.
 
+        TOKEN MAPPING (explicit):
+          clobTokenIds[0] → YES token → "Up" side  (BTC ends ABOVE reference price)
+          clobTokenIds[1] → NO  token → "Down" side (BTC ends BELOW reference price)
+
+        Buying YES = betting BTC goes UP.
+        Buying NO  = betting BTC goes DOWN (we buy NO when side == "Down").
+
         Handles: JSON string, list, empty string, malformed JSON, non-list decoded value.
         Returns (yes_token_id, no_token_id) — either may be None.
         """
@@ -475,6 +482,46 @@ class BtcScalpStrategy:
         yes_id = str(raw[0]) if len(raw) > 0 and raw[0] else None
         no_id = str(raw[1]) if len(raw) > 1 and raw[1] else None
         return yes_id, no_id
+
+    @staticmethod
+    def _validate_market_mapping(
+        m: dict[str, Any],
+        yes_token_id: str | None,
+        no_token_id: str | None,
+        slug: str,
+    ) -> str | None:
+        """Validate that the market dict has a consistent, well-formed mapping.
+
+        Returns an error string if validation fails, None if OK.
+
+        Checks:
+          1. question contains "BTC" (sanity — this is a BTC market)
+          2. slug looks like a btc-updown-5m-* slug
+          3. yes_token_id and no_token_id are both present (both sides needed)
+          4. conditionId is present
+          5. question contains "above" or "below" (directional — not generic)
+        """
+        question = (m.get("question") or "").strip()
+        condition_id = m.get("conditionId") or ""
+
+        if "BTC" not in question.upper() and "bitcoin" not in question.lower():
+            return f"question missing BTC reference: {question!r}"
+
+        if not slug.startswith("btc-updown-5m-") and "btc" not in slug.lower():
+            return f"slug does not look like a btc-updown-5m market: {slug!r}"
+
+        if yes_token_id is None or no_token_id is None:
+            return (
+                f"missing token IDs: yes_token={yes_token_id!r} no_token={no_token_id!r}"
+            )
+
+        if not condition_id:
+            return "missing conditionId"
+
+        if not any(w in question.lower() for w in ("above", "below", "higher", "lower", "up", "down")):
+            return f"question has no directional keyword: {question!r}"
+
+        return None
 
     def _compute_signal(
         self, market: dict[str, Any]
@@ -572,6 +619,9 @@ class BtcScalpStrategy:
         wide_spread_seen = 0
         no_ev_seen = 0
         trade_candidates_seen = 0
+        invalid_mapping_seen = 0
+        already_traded_seen = 0
+        no_effective_ask_seen = 0
         realized_vol = self._get_realized_vol()
 
         for m in btc_markets:
@@ -629,6 +679,17 @@ class BtcScalpStrategy:
 
             # CLOB fetch (per side, independent availability)
             yes_token_id, no_token_id = self._parse_clob_token_ids(m)
+
+            # Phase 1 — validate market mapping before any CLOB work
+            mapping_err = self._validate_market_mapping(m, yes_token_id, no_token_id, _slug_raw)
+            if mapping_err:
+                print(
+                    f"[Scan] skip slug={_slug_raw} reason=invalid_market_mapping detail={mapping_err!r}",
+                    flush=True,
+                )
+                skip_reason = "invalid_market_mapping"
+                # Still write a BtcScanLog below — fall through, do NOT continue here.
+
             up_best_ask: float | None = None
             up_best_bid: float | None = None
             up_spread: float | None = None
@@ -717,6 +778,9 @@ class BtcScalpStrategy:
             side_ask: float | None = None
             side_bid_vol: float = 0.0
             side_ask_vol: float = 0.0
+            # Effective executable quotes from depth (None = depth not fetched / no usable level)
+            eff_bid: float | None = None
+            eff_ask: float | None = None
 
             if skip_reason is None:
                 if up_entry_price is None and down_entry_price is None:
@@ -795,7 +859,22 @@ class BtcScalpStrategy:
                             except Exception as exc:
                                 LOGGER.warning("Depth fetch failed %s: %s", _slug_raw, exc)
                     if is_stub:
-                        skip_reason = "stub_book"
+                        # Classify the stub skip more precisely using depth recovery outcome:
+                        #   no_effective_ask — depth fetched, usable bid found, no usable ask
+                        #                      (one-sided market: buyers present, no sellers at <0.95)
+                        #   stub_book        — no usable depth at all (empty book, fetch failed,
+                        #                      or both eff_bid and eff_ask are None)
+                        if eff_bid is not None and eff_ask is None:
+                            skip_reason = "no_effective_ask"
+                            print(
+                                f"[Scan] skip slug={_slug_raw} reason=no_effective_ask"
+                                f" side={provisional_side}"
+                                f" raw_bid={side_bid} raw_ask={side_ask}"
+                                f" eff_bid={eff_bid} eff_ask=None",
+                                flush=True,
+                            )
+                        else:
+                            skip_reason = "stub_book"
                     elif self._should_skip_for_spread(side_spread, settings.btc_scalp_max_spread):
                         skip_reason = "spread_too_wide"
                     elif provisional_ev < settings.btc_scalp_min_ev_per_contract:
@@ -820,10 +899,14 @@ class BtcScalpStrategy:
             # ── Per-scan classification counters (after gate fully resolves) ─
             if skip_reason == "stub_book":
                 stub_books_seen += 1
+            elif skip_reason == "no_effective_ask":
+                no_effective_ask_seen += 1
             elif skip_reason == "spread_too_wide":
                 wide_spread_seen += 1
             elif skip_reason == "no_ev":
                 no_ev_seen += 1
+            elif skip_reason == "invalid_market_mapping":
+                invalid_mapping_seen += 1
             elif decision == "trade":
                 trade_candidates_seen += 1
             if provisional_side is not None and not is_stub:
@@ -906,24 +989,69 @@ class BtcScalpStrategy:
                     continue
                 self._fired_signals[signal_key] = now_ts
 
-                # Existing open trade check
+                # Phase 2 — hard block: one trade per slug, any status (open or closed)
                 existing = (
                     session.query(Trade)
                     .filter(
                         Trade.market_id == market_row.id,
                         Trade.strategy == "btc_scalp",
-                        Trade.status == "open",
                     )
                     .first()
                 )
                 if existing:
-                    LOGGER.debug("BTC SCALP: open trade already exists for %s — skipping", slug)
+                    already_traded_seen += 1
+                    print(
+                        f"[Scan] skip slug={slug} reason=already_traded"
+                        f" existing_id={existing.id} existing_status={existing.status}",
+                        flush=True,
+                    )
                     session.commit()
                     continue
 
                 if self._check_open_risk_cap(session):
                     session.commit()
                     continue
+
+                # ── Phase 1: EntryCheck — confirm mapping before commit ───────
+                # Up  = YES token (clobTokenIds[0]): BTC ends ABOVE reference → buy YES
+                # Down = NO token (clobTokenIds[1]): BTC ends BELOW reference → buy NO
+                chosen_token = yes_token_id if side == "Up" else no_token_id
+                print(
+                    f"[EntryCheck] slug={slug} side={side}"
+                    f" yes_token={yes_token_id} no_token={no_token_id}"
+                    f" chosen_token={chosen_token}"
+                    f' question="{question}"',
+                    flush=True,
+                )
+
+                # ── Phase 3: SignalAudit — EV uses effective executable ask ──
+                # EV = p_side - eff_ask (side_entry_price is eff_ask if stub was
+                # overridden by depth; raw top-of-book ask otherwise).
+                print(
+                    f"[SignalAudit] slug={slug} side={side}"
+                    f" start_price={start_price_proxy} current_price={btc}"
+                    f" minutes_left={minutes_left}"
+                    f" p_up={p_up:.4f} p_down={1.0 - p_up:.4f}"
+                    f" eff_bid={side_bid} eff_ask={side_entry_price}"
+                    f" ev={provisional_ev:.4f}",
+                    flush=True,
+                )
+                # Anomaly: model probability is extreme but the book disagrees.
+                # Extreme p_up (>0.90 or <0.10) should roughly correspond to the
+                # market's ask being far from 0.50.  If p_up > 0.90 the Up ask
+                # should be close to 1.0 (expensive), not cheap.  A cheap ask
+                # while p_up is extreme suggests a model/book mismatch worth flagging.
+                up_ask_for_check = up_best_ask or side_entry_price or 0.5
+                down_ask_for_check = down_best_ask or (1.0 - (up_best_ask or 0.5))
+                if (p_up > 0.90 and up_ask_for_check < 0.70) or (
+                    p_up < 0.10 and down_ask_for_check < 0.70
+                ):
+                    print(
+                        f"[SignalAudit] anomaly=probability_book_mismatch"
+                        f" p_up={p_up:.4f} up_ask={up_ask_for_check}"
+                        f" down_ask={down_ask_for_check}",
+                        flush=True,
+                    )
 
                 # ── Open paper trade ─────────────────────────────────────────
                 session.add(BtcSignalLog(
@@ -987,7 +1115,10 @@ class BtcScalpStrategy:
             f" | signals={qualified_count} | cooldown_skipped={skipped_cooldown}"
             f" | stub={stub_books_seen} real={real_books_seen}"
             f" | wide_spread={wide_spread_seen} no_ev={no_ev_seen}"
-            f" | trade_candidates={trade_candidates_seen}",
+            f" | trade_candidates={trade_candidates_seen}"
+            f" | invalid_mapping={invalid_mapping_seen}"
+            f" | already_traded={already_traded_seen}"
+            f" | no_eff_ask={no_effective_ask_seen}",
             flush=True,
         )
 
