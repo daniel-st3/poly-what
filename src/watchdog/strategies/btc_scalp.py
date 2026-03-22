@@ -90,6 +90,7 @@ class BtcScalpStrategy:
         from watchdog.notifications.telegram import send_telegram
         try:
             send_telegram(msg, self._tg_token, self._tg_chat)
+            print("[Notify] Telegram send succeeded", flush=True)
         except Exception as exc:
             print(f"[Notify] Telegram send failed: {exc}", flush=True)
             LOGGER.warning("Telegram notification failed: %s", exc)
@@ -1021,7 +1022,10 @@ class BtcScalpStrategy:
             n_unresolved: int = 0
             n_missing_outcome: int = 0
             n_notify_fail: int = 0
-            pending_notifications: list[tuple[str, int]] = []  # (message, trade_id)
+            n_close_msgs_queued: int = 0
+            n_telegram_attempted: int = 0
+            n_telegram_sent: int = 0
+            pending_notifications: list[tuple[str, int, str]] = []  # (message, trade_id, slug)
 
             for market_id in market_ids:
                 exit_price = 0.0
@@ -1256,6 +1260,7 @@ class BtcScalpStrategy:
                             f"PnL: +${pnl:.2f} on $2.00 stake\n"
                             f"Session: {self._trades_closed} closed | Net PnL: ${self._pnl:+.2f}",
                             trade.id,
+                            market.slug,
                         ))
                     else:
                         pending_notifications.append((
@@ -1265,7 +1270,14 @@ class BtcScalpStrategy:
                             f"PnL: -${abs(pnl):.2f} on $2.00 stake\n"
                             f"Session: {self._trades_closed} closed | Net PnL: ${self._pnl:+.2f}",
                             trade.id,
+                            market.slug,
                         ))
+                    n_close_msgs_queued += 1
+                    print(
+                        f"[Resolution] close_msg_queued trade_id={trade.id}"
+                        f" slug={market.slug} pnl={pnl:.4f}",
+                        flush=True,
+                    )
                     LOGGER.info(
                         "BTC SCALP: closed %s side=%s outcome=%s pnl=%.4f",
                         market.slug,
@@ -1322,10 +1334,16 @@ class BtcScalpStrategy:
             except Exception as exc:
                 LOGGER.warning("BTC SCALP: could not build bankroll block: %s", exc)
                 bankroll = None
-            for msg, trade_id in pending_notifications:
+            for msg, trade_id, slug in pending_notifications:
                 try:
                     full_msg = f"{msg}\n{bankroll}" if bankroll else msg
+                    n_telegram_attempted += 1
+                    print(
+                        f"[Resolution] telegram_close_attempt trade_id={trade_id} slug={slug}",
+                        flush=True,
+                    )
                     self._notify(full_msg)
+                    n_telegram_sent += 1
                     print(f"[Resolution] telegram_close_sent trade_id={trade_id}", flush=True)
                 except Exception as exc:
                     n_notify_fail += 1
@@ -1340,14 +1358,19 @@ class BtcScalpStrategy:
             f"[Resolution] Summary inspected={n_open} parsed={n_parsed}"
             f" closed={closed_this_run} parse_fail={n_missing_outcome}"
             f" missing_cid={n_missing_cid} unresolved={n_unresolved}"
-            f" notify_fail={n_notify_fail}",
+            f" close_msgs_queued={n_close_msgs_queued}"
+            f" telegram_attempted={n_telegram_attempted}"
+            f" telegram_sent={n_telegram_sent}"
+            f" telegram_failed={n_notify_fail}",
             flush=True,
         )
         LOGGER.info(
             "[Resolution] open=%d closed=%d missing_cid=%d gamma_queried=%d"
-            " unresolved=%d parsed=%d notify_fail=%d",
+            " unresolved=%d parsed=%d close_msgs_queued=%d"
+            " telegram_attempted=%d telegram_sent=%d telegram_failed=%d",
             n_open, closed_this_run, n_missing_cid, n_gamma_queried,
-            n_unresolved, n_parsed, n_notify_fail,
+            n_unresolved, n_parsed, n_close_msgs_queued,
+            n_telegram_attempted, n_telegram_sent, n_notify_fail,
         )
 
     # ── Main loop ───────────────────────────────────────────────────────────
