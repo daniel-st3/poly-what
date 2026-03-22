@@ -1328,6 +1328,7 @@ class BtcScalpStrategy:
             )
 
         if pending_notifications:
+            from watchdog.notifications.telegram import send_telegram
             try:
                 stats = self._btc_paper_stats()
                 bankroll = self._bankroll_block(stats)
@@ -1342,9 +1343,15 @@ class BtcScalpStrategy:
                         f"[Resolution] telegram_close_attempt trade_id={trade_id} slug={slug}",
                         flush=True,
                     )
-                    self._notify(full_msg)
+                    # Call send_telegram directly so exceptions propagate to this try/except.
+                    # _notify() swallows all errors (fire-and-forget), making telegram_close_failed
+                    # unreachable. send_telegram now raises on HTTP errors so we can detect failures.
+                    send_telegram(full_msg, self._tg_token, self._tg_chat)
                     n_telegram_sent += 1
                     print(f"[Resolution] telegram_close_sent trade_id={trade_id}", flush=True)
+                    # Avoid Telegram rate limit (30 msg/min). Open notifications fire one per
+                    # scan cycle (5s apart) so they are not affected.
+                    await asyncio.sleep(0.3)
                 except Exception as exc:
                     n_notify_fail += 1
                     print(
