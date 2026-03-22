@@ -60,6 +60,12 @@ CLOB_FETCH_TIMEOUT = 4.0   # seconds for synchronous CLOB call via asyncio.to_th
 _V1_MIN_EDGE = 0.10
 _V1_CERTAINTY_THRESHOLD = 0.90
 _V1_EDGE_THRESHOLD = 0.08
+# Minimum acceptable effective ask recovered from depth (strategy safety invariant).
+# Based on observed anomalous depth-recovery behavior in production (stale micro-orders
+# at 0.01-0.02 that pass _first_usable_quote but produce implausibly large EV).
+# Not a claim that such prices are universally impossible on Polymarket.
+# Calibrated to the BTC 5-minute scalp trading range (normal range: 0.30-0.70).
+_EFF_ASK_FLOOR = 0.10
 
 
 class BtcScalpStrategy:
@@ -426,6 +432,20 @@ class BtcScalpStrategy:
         return ask > 0.95
 
     @staticmethod
+    def _is_eff_ask_usable(eff_ask: float, floor: float) -> bool:
+        """Return True if eff_ask meets the minimum quality floor for this strategy.
+
+        Production safety guard applied after _first_usable_quote recovers a price
+        from depth. Rejects prices that are anomalously low based on observed
+        depth-recovery behavior (stale / ghost micro-orders), not on a claim that
+        such prices are universally invalid on Polymarket.
+
+        Accepts prices >= floor (price == floor is usable).
+        Rejects prices strictly below floor.
+        """
+        return eff_ask >= floor
+
+    @staticmethod
     def _first_usable_quote(
         bids: list, asks: list, min_bid: float
     ) -> tuple[float | None, float | None]:
@@ -622,6 +642,7 @@ class BtcScalpStrategy:
         invalid_mapping_seen = 0
         already_traded_seen = 0
         no_effective_ask_seen = 0
+        eff_ask_floor_seen = 0
         realized_vol = self._get_realized_vol()
 
         for m in btc_markets:
@@ -848,40 +869,55 @@ class BtcScalpStrategy:
                                         flush=True,
                                     )
                                     if eff_ask is not None:
-                                        # Override with executable depth price — not a stub skip
-                                        is_stub = False
-                                        side_entry_price = eff_ask
-                                        side_spread = eff_spread
-                                        provisional_ev = self._ev_buy_yes(
-                                            p_up if provisional_side == "Up" else 1.0 - p_up,
-                                            eff_ask,
-                                        )
-                                        # Sync ev_up / ev_down so trade_candidate log and
-                                        # BtcScanLog reflect the effective ask, not the stale
-                                        # raw stub ask that was used for initial EV computation.
-                                        if provisional_side == "Up":
-                                            ev_up = provisional_ev
+                                        if not self._is_eff_ask_usable(eff_ask, _EFF_ASK_FLOOR):
+                                            # Anomalously low price — stale / ghost order in depth.
+                                            # Log, mark as floor violation, and nullify eff_ask so
+                                            # the stub gate below classifies correctly.
+                                            print(
+                                                f"[Scan] eff_ask_rejected slug={_slug_raw}"
+                                                f" side={provisional_side}"
+                                                f" eff_ask={eff_ask} floor={_EFF_ASK_FLOOR}"
+                                                f" eff_bid={eff_bid} eff_spread={eff_spread}",
+                                                flush=True,
+                                            )
+                                            skip_reason = "eff_ask_below_floor"
+                                            eff_ask = None
                                         else:
-                                            ev_down = provisional_ev
+                                            # Override with executable depth price — not a stub skip
+                                            is_stub = False
+                                            side_entry_price = eff_ask
+                                            side_spread = eff_spread
+                                            provisional_ev = self._ev_buy_yes(
+                                                p_up if provisional_side == "Up" else 1.0 - p_up,
+                                                eff_ask,
+                                            )
+                                            # Sync ev_up / ev_down so trade_candidate log and
+                                            # BtcScanLog reflect the effective ask, not the stale
+                                            # raw stub ask that was used for initial EV computation.
+                                            if provisional_side == "Up":
+                                                ev_up = provisional_ev
+                                            else:
+                                                ev_down = provisional_ev
                             except Exception as exc:
                                 LOGGER.warning("Depth fetch failed %s: %s", _slug_raw, exc)
                     if is_stub:
-                        # Classify the stub skip more precisely using depth recovery outcome:
-                        #   no_effective_ask — depth fetched, usable bid found, no usable ask
-                        #                      (one-sided market: buyers present, no sellers at <0.95)
-                        #   stub_book        — no usable depth at all (empty book, fetch failed,
-                        #                      or both eff_bid and eff_ask are None)
-                        if eff_bid is not None and eff_ask is None:
-                            skip_reason = "no_effective_ask"
-                            print(
-                                f"[Scan] skip slug={_slug_raw} reason=no_effective_ask"
-                                f" side={provisional_side}"
-                                f" raw_bid={side_bid} raw_ask={side_ask}"
-                                f" eff_bid={eff_bid} eff_ask=None",
-                                flush=True,
-                            )
-                        else:
-                            skip_reason = "stub_book"
+                        if skip_reason is None:
+                            # Classify the stub skip more precisely using depth recovery outcome:
+                            #   no_effective_ask — depth fetched, usable bid found, no usable ask
+                            #                      (one-sided market: buyers present, no sellers at <0.95)
+                            #   stub_book        — no usable depth at all (empty book, fetch failed,
+                            #                      or both eff_bid and eff_ask are None)
+                            if eff_bid is not None and eff_ask is None:
+                                skip_reason = "no_effective_ask"
+                                print(
+                                    f"[Scan] skip slug={_slug_raw} reason=no_effective_ask"
+                                    f" side={provisional_side}"
+                                    f" raw_bid={side_bid} raw_ask={side_ask}"
+                                    f" eff_bid={eff_bid} eff_ask=None",
+                                    flush=True,
+                                )
+                            else:
+                                skip_reason = "stub_book"
                     elif self._should_skip_for_spread(side_spread, settings.btc_scalp_max_spread):
                         skip_reason = "spread_too_wide"
                     elif provisional_ev < settings.btc_scalp_min_ev_per_contract:
@@ -908,6 +944,8 @@ class BtcScalpStrategy:
                 stub_books_seen += 1
             elif skip_reason == "no_effective_ask":
                 no_effective_ask_seen += 1
+            elif skip_reason == "eff_ask_below_floor":
+                eff_ask_floor_seen += 1
             elif skip_reason == "spread_too_wide":
                 wide_spread_seen += 1
             elif skip_reason == "no_ev":
@@ -1125,7 +1163,8 @@ class BtcScalpStrategy:
             f" | trade_candidates={trade_candidates_seen}"
             f" | invalid_mapping={invalid_mapping_seen}"
             f" | already_traded={already_traded_seen}"
-            f" | no_eff_ask={no_effective_ask_seen}",
+            f" | no_eff_ask={no_effective_ask_seen}"
+            f" | eff_ask_floor={eff_ask_floor_seen}",
             flush=True,
         )
 

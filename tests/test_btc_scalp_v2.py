@@ -333,3 +333,50 @@ def test_resolution_win_loss_mapping(side: str, outcome: str, expected_exit: flo
     assert exit_price == expected_exit, (
         f"side={side!r} outcome={outcome!r}: expected exit_price={expected_exit}, got {exit_price}"
     )
+
+
+# ---------------------------------------------------------------------------
+# _is_eff_ask_usable
+# ---------------------------------------------------------------------------
+
+def test_is_eff_ask_usable_rejects_below_floor(strategy):
+    """Price strictly below floor is not usable (stale / ghost order)."""
+    assert strategy._is_eff_ask_usable(0.01, 0.10) is False
+
+
+def test_is_eff_ask_usable_rejects_just_below_floor(strategy):
+    assert strategy._is_eff_ask_usable(0.09, 0.10) is False
+
+
+def test_is_eff_ask_usable_accepts_at_floor(strategy):
+    """Price exactly at floor IS usable — floor is the minimum acceptable value."""
+    assert strategy._is_eff_ask_usable(0.10, 0.10) is True
+
+
+def test_is_eff_ask_usable_accepts_above_floor(strategy):
+    """Normal trading range price is always usable."""
+    assert strategy._is_eff_ask_usable(0.48, 0.10) is True
+
+
+def test_stub_gate_guard_preserves_eff_ask_below_floor():
+    """The 'if skip_reason is None' guard in the stub gate must not overwrite
+    an already-set skip_reason from the floor rejection branch.
+
+    Mirrors the patched control flow inline to document the invariant without
+    requiring a full scan loop mock.
+    """
+    skip_reason = "eff_ask_below_floor"  # set by floor rejection branch
+    eff_bid: float | None = 0.45
+    eff_ask: float | None = None         # nullified by floor rejection branch
+
+    is_stub = True
+    if is_stub:
+        if skip_reason is None:          # guard under test
+            if eff_bid is not None and eff_ask is None:
+                skip_reason = "no_effective_ask"
+            else:
+                skip_reason = "stub_book"
+
+    assert skip_reason == "eff_ask_below_floor", (
+        "Stub gate must not overwrite skip_reason when already set"
+    )
