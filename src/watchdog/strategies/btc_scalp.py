@@ -856,6 +856,13 @@ class BtcScalpStrategy:
                                             p_up if provisional_side == "Up" else 1.0 - p_up,
                                             eff_ask,
                                         )
+                                        # Sync ev_up / ev_down so trade_candidate log and
+                                        # BtcScanLog reflect the effective ask, not the stale
+                                        # raw stub ask that was used for initial EV computation.
+                                        if provisional_side == "Up":
+                                            ev_up = provisional_ev
+                                        else:
+                                            ev_down = provisional_ev
                             except Exception as exc:
                                 LOGGER.warning("Depth fetch failed %s: %s", _slug_raw, exc)
                     if is_stub:
