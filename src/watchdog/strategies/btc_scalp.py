@@ -1020,7 +1020,8 @@ class BtcScalpStrategy:
             n_gamma_queried: int = 0
             n_unresolved: int = 0
             n_missing_outcome: int = 0
-            pending_notifications: list[str] = []
+            n_notify_fail: int = 0
+            pending_notifications: list[tuple[str, int]] = []  # (message, trade_id)
 
             for market_id in market_ids:
                 exit_price = 0.0
@@ -1030,8 +1031,13 @@ class BtcScalpStrategy:
 
                 market_trades = [t for t in open_trades if t.market_id == market_id]
                 sides = [t.side for t in market_trades]
+                _trade_ids = [t.id for t in market_trades]
                 print(
-                    f"[DEBUG] Checking position: slug={market.slug} condition_id={market.condition_id} side={sides}",
+                    f"[Resolution] inspect trade_id={_trade_ids}"
+                    f" slug={market.slug} side={sides}"
+                    f" condition_id={market.condition_id or 'MISSING'}"
+                    f" resolution_time={market.resolution_time}"
+                    f" now={now.isoformat()}",
                     flush=True,
                 )
                 _cid = market.condition_id or "MISSING"
@@ -1086,37 +1092,101 @@ class BtcScalpStrategy:
                         if resp.status_code == 200:
                             data = resp.json()
                             items = data if isinstance(data, list) else [data]
+
+                            # Log raw Gamma fields before parsing so we can diagnose failures
+                            if items:
+                                _first = items[0]
+                                print(
+                                    f"[Resolution] gamma_raw slug={market.slug}"
+                                    f" resolved={_first.get('resolved')!r}"
+                                    f" resolutionOutcome={_first.get('resolutionOutcome')!r}"
+                                    f" outcomePrices={_first.get('outcomePrices')!r}"
+                                    f" winner={_first.get('winner')!r}"
+                                    f" n_items={len(items)}",
+                                    flush=True,
+                                )
+
                             for item in items:
-                                if item.get("resolved"):
-                                    raw = (item.get("resolutionOutcome") or "").upper()
-                                    if raw in ("YES", "NO"):
-                                        outcome = raw
+                                _is_resolved = item.get("resolved")
+                                _raw_outcome = (item.get("resolutionOutcome") or "").upper()
+
+                                if _is_resolved:
+                                    if _raw_outcome in ("YES", "NO"):
+                                        # Primary path: resolved=True + standard resolutionOutcome
+                                        outcome = _raw_outcome
                                         market.resolution_outcome = outcome
                                         market.status = "resolved"
                                         print(
                                             f"[Gamma] resolved slug={market.slug}"
-                                            f" condition_id={market.condition_id}"
-                                            f" status={resp.status_code}"
-                                            f" resolved=True resolutionOutcome={raw}",
+                                            f" resolved=True resolutionOutcome={_raw_outcome}",
                                             flush=True,
                                         )
                                         LOGGER.info(
                                             "BTC SCALP Gamma resolved | slug=%s"
                                             " resolved=True resolutionOutcome=%s",
-                                            market.slug, raw,
+                                            market.slug, _raw_outcome,
                                         )
                                         break
+                                    else:
+                                        # resolved=True but outcome is unexpected — log and fall through
+                                        print(
+                                            f"[Resolution] gamma_unexpected_outcome slug={market.slug}"
+                                            f" resolved={_is_resolved!r}"
+                                            f" resolutionOutcome={_raw_outcome!r}"
+                                            f" — falling back to outcomePrices",
+                                            flush=True,
+                                        )
+
+                                # Fallback: derive outcome from outcomePrices when prices are definitive.
+                                # Gamma sets outcomePrices=["1","0"] for YES-win or ["0","1"] for NO-win
+                                # even before or instead of setting resolutionOutcome.
+                                _prices_raw = item.get("outcomePrices")
+                                if _prices_raw and outcome not in ("YES", "NO"):
+                                    try:
+                                        _prices = (
+                                            json.loads(_prices_raw)
+                                            if isinstance(_prices_raw, str)
+                                            else _prices_raw
+                                        )
+                                        _p0 = float(_prices[0])
+                                        _p1 = float(_prices[1])
+                                        if _p0 >= 0.99:
+                                            outcome = "YES"
+                                            market.resolution_outcome = outcome
+                                            market.status = "resolved"
+                                            print(
+                                                f"[Gamma] resolved_via_prices slug={market.slug}"
+                                                f" outcomePrices=[{_p0},{_p1}] → outcome=YES",
+                                                flush=True,
+                                            )
+                                            break
+                                        elif _p1 >= 0.99:
+                                            outcome = "NO"
+                                            market.resolution_outcome = outcome
+                                            market.status = "resolved"
+                                            print(
+                                                f"[Gamma] resolved_via_prices slug={market.slug}"
+                                                f" outcomePrices=[{_p0},{_p1}] → outcome=NO",
+                                                flush=True,
+                                            )
+                                            break
+                                    except Exception as _pe:
+                                        print(
+                                            f"[Resolution] prices_parse_fail slug={market.slug}"
+                                            f" err={_pe}",
+                                            flush=True,
+                                        )
                             else:
                                 n_unresolved += 1
                                 print(
                                     f"[Gamma] unresolved slug={market.slug}"
                                     f" condition_id={market.condition_id}"
-                                    f" status={resp.status_code} resolved=False",
+                                    f" — no resolved item found in {len(items)} item(s)",
                                     flush=True,
                                 )
                                 LOGGER.info(
                                     "BTC SCALP Gamma not resolved | slug=%s"
-                                    " resolved=False or no matching item",
+                                    " no resolved item found",
                                     market.slug,
                                 )
                     except Exception as exc:
@@ -1141,9 +1211,28 @@ class BtcScalpStrategy:
                     )
                     continue
 
+                print(
+                    f"[Resolution] parsed slug={market.slug} outcome={outcome}"
+                    f" trades={[t.id for t in market_trades]}",
+                    flush=True,
+                )
+
                 for trade in market_trades:
-                    exit_price = 1.0 if trade.side == outcome else 0.0
+                    # "Up" side bought the YES token → wins when outcome=="YES"
+                    # "Down" side bought the NO token → wins when outcome=="NO"
+                    if trade.side == "Up":
+                        exit_price = 1.0 if outcome == "YES" else 0.0
+                    elif trade.side == "Down":
+                        exit_price = 1.0 if outcome == "NO" else 0.0
+                    else:
+                        exit_price = 0.0  # unknown side — conservative
+                    won = exit_price == 1.0
                     pnl = (exit_price - trade.entry_price) * trade.size
+                    print(
+                        f"[Resolution] parsed trade_id={trade.id} slug={market.slug}"
+                        f" side={trade.side} outcome={outcome} won={won} pnl={pnl:.4f}",
+                        flush=True,
+                    )
                     trade.exit_price = exit_price
                     trade.pnl = pnl
                     trade.status = "closed"
@@ -1152,40 +1241,31 @@ class BtcScalpStrategy:
                     self._pnl += pnl
                     self._trades_closed += 1
                     closed_this_run += 1
-                    print(
-                        f"[Resolution] trade closed in DB trade_id={trade.id}"
-                        f" slug={market.slug} pnl={pnl:.4f}",
-                        flush=True,
-                    )
-                    print(
-                        f"[Gamma] action={'closed_win' if exit_price == 1.0 else 'closed_loss'}"
-                        f" slug={market.slug} condition_id={market.condition_id}"
-                        f" side={trade.side} outcome={outcome} pnl={pnl:.4f}",
-                        flush=True,
-                    )
                     LOGGER.info(
                         "BTC SCALP trade disposition | trade_id=%d slug=%s side=%s outcome=%s"
                         " action=%s pnl=%.4f",
                         trade.id, market.slug, trade.side, outcome,
-                        "closed_win" if exit_price == 1.0 else "closed_loss",
+                        "closed_win" if won else "closed_loss",
                         pnl,
                     )
-                    if exit_price == 1.0:
-                        pending_notifications.append(
+                    if won:
+                        pending_notifications.append((
                             f"🏆 BTC TRADE CLOSED — WIN\n"
                             f"Market: {market.question}\n"
                             f"Side: {trade.side} | Entry: {trade.entry_price:.2f} → Exit: 1.00\n"
                             f"PnL: +${pnl:.2f} on $2.00 stake\n"
-                            f"Session: {self._trades_closed} closed | Net PnL: ${self._pnl:+.2f}"
-                        )
+                            f"Session: {self._trades_closed} closed | Net PnL: ${self._pnl:+.2f}",
+                            trade.id,
+                        ))
                     else:
-                        pending_notifications.append(
+                        pending_notifications.append((
                             f"❌ BTC TRADE CLOSED — LOSS\n"
                             f"Market: {market.question}\n"
                             f"Side: {trade.side} | Entry: {trade.entry_price:.2f} → Exit: 0.00\n"
                             f"PnL: -${abs(pnl):.2f} on $2.00 stake\n"
-                            f"Session: {self._trades_closed} closed | Net PnL: ${self._pnl:+.2f}"
-                        )
+                            f"Session: {self._trades_closed} closed | Net PnL: ${self._pnl:+.2f}",
+                            trade.id,
+                        ))
                     LOGGER.info(
                         "BTC SCALP: closed %s side=%s outcome=%s pnl=%.4f",
                         market.slug,
@@ -1214,7 +1294,21 @@ class BtcScalpStrategy:
                         result_str,
                     )
 
-            session.commit()
+            try:
+                session.commit()
+                for t in open_trades:
+                    if t.status == "closed":
+                        print(
+                            f"[Resolution] db_closed trade_id={t.id}"
+                            f" slug={session.get(Market, t.market_id).slug if t.market_id else '?'}"
+                            f" status=closed pnl={t.pnl:.4f}",
+                            flush=True,
+                        )
+            except Exception as _commit_exc:
+                print(f"[Resolution] db_commit_failed: {_commit_exc}", flush=True)
+                LOGGER.error("BTC SCALP resolution commit failed: %s", _commit_exc)
+                session.rollback()
+                closed_this_run = 0  # reset so summary reflects reality
             LOGGER.info(
                 "BTC SCALP resolution cycle | open_checked=%d missing_condition_id=%d"
                 " gamma_queried=%d unresolved=%d missing_outcome=%d closed=%d",
@@ -1228,21 +1322,32 @@ class BtcScalpStrategy:
             except Exception as exc:
                 LOGGER.warning("BTC SCALP: could not build bankroll block: %s", exc)
                 bankroll = None
-            for msg in pending_notifications:
+            for msg, trade_id in pending_notifications:
                 try:
                     full_msg = f"{msg}\n{bankroll}" if bankroll else msg
                     self._notify(full_msg)
+                    print(f"[Resolution] telegram_close_sent trade_id={trade_id}", flush=True)
                 except Exception as exc:
-                    print(f"[Resolution] Notification failed: {exc}", flush=True)
-                    LOGGER.warning("Close notification failed: %s", exc)
+                    n_notify_fail += 1
+                    print(
+                        f"[Resolution] telegram_close_failed trade_id={trade_id} error={exc}",
+                        flush=True,
+                    )
+                    LOGGER.warning("Close notification failed trade_id=%d: %s", trade_id, exc)
 
+        n_parsed = n_open - n_missing_cid - n_unresolved - n_missing_outcome
         print(
-            f"[Resolution] Checked {n_open} open positions, {closed_this_run} resolved and closed",
+            f"[Resolution] Summary inspected={n_open} parsed={n_parsed}"
+            f" closed={closed_this_run} parse_fail={n_missing_outcome}"
+            f" missing_cid={n_missing_cid} unresolved={n_unresolved}"
+            f" notify_fail={n_notify_fail}",
             flush=True,
         )
         LOGGER.info(
-            "[Resolution] open=%d closed=%d missing_cid=%d gamma_queried=%d unresolved=%d",
-            n_open, closed_this_run, n_missing_cid, n_gamma_queried, n_unresolved,
+            "[Resolution] open=%d closed=%d missing_cid=%d gamma_queried=%d"
+            " unresolved=%d parsed=%d notify_fail=%d",
+            n_open, closed_this_run, n_missing_cid, n_gamma_queried,
+            n_unresolved, n_parsed, n_notify_fail,
         )
 
     # ── Main loop ───────────────────────────────────────────────────────────

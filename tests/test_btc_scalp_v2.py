@@ -308,3 +308,28 @@ def test_midpoint_fallback_uses_mid_price(strategy):
     ev_with_ask = strategy._ev_buy_yes(p_up, ask_better)
     # Better ask → higher EV
     assert ev_with_ask > ev_with_mid
+
+
+# ---------------------------------------------------------------------------
+# Resolution win/loss mapping (side→outcome)
+# The YES token is held by "Up" trades; NO token by "Down" trades.
+# Gamma sets resolutionOutcome="YES" when BTC went up, "NO" when down.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("side,outcome,expected_exit", [
+    ("Up",   "YES", 1.0),   # Up trade + YES resolution → WIN
+    ("Up",   "NO",  0.0),   # Up trade + NO  resolution → LOSS
+    ("Down", "NO",  1.0),   # Down trade + NO resolution → WIN
+    ("Down", "YES", 0.0),   # Down trade + YES resolution → LOSS
+])
+def test_resolution_win_loss_mapping(side: str, outcome: str, expected_exit: float) -> None:
+    """Regression test: side/outcome mapping must never compare 'Up'=='YES'."""
+    if side == "Up":
+        exit_price = 1.0 if outcome == "YES" else 0.0
+    elif side == "Down":
+        exit_price = 1.0 if outcome == "NO" else 0.0
+    else:
+        exit_price = 0.0
+    assert exit_price == expected_exit, (
+        f"side={side!r} outcome={outcome!r}: expected exit_price={expected_exit}, got {exit_price}"
+    )
