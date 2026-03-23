@@ -242,18 +242,20 @@ def test_spread_filter_none_is_not_a_skip(strategy):
 # ---------------------------------------------------------------------------
 
 def test_parse_clob_token_ids_list(strategy):
+    # btc-updown markets: outcomes=[No, Yes] → clobTokenIds[0]=No/Down, [1]=Yes/Up
     m = {"clobTokenIds": ["abc", "def"]}
     yes, no = strategy._parse_clob_token_ids(m)
-    assert yes == "abc"
-    assert no == "def"
+    assert yes == "def"
+    assert no == "abc"
 
 
 def test_parse_clob_token_ids_json_string(strategy):
     import json
+    # btc-updown markets: outcomes=[No, Yes] → clobTokenIds[0]=No/Down, [1]=Yes/Up
     m = {"clobTokenIds": json.dumps(["tok1", "tok2"])}
     yes, no = strategy._parse_clob_token_ids(m)
-    assert yes == "tok1"
-    assert no == "tok2"
+    assert yes == "tok2"
+    assert no == "tok1"
 
 
 def test_parse_clob_token_ids_malformed(strategy):
