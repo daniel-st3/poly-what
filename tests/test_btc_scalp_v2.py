@@ -382,3 +382,59 @@ def test_stub_gate_guard_preserves_eff_ask_below_floor():
     assert skip_reason == "eff_ask_below_floor", (
         "Stub gate must not overwrite skip_reason when already set"
     )
+
+
+# ---------------------------------------------------------------------------
+# btc_scalp_disable_up_entries guard
+# ---------------------------------------------------------------------------
+
+def test_up_side_disabled_sets_skip_reason():
+    """When btc_scalp_disable_up_entries=True, provisional_side==Up must
+    produce skip_reason='up_side_disabled' and not 'no_ev'."""
+    provisional_side = "Up"
+    provisional_ev = 0.05   # positive EV — would otherwise pass
+    skip_reason = None
+
+    min_ev = 0.01
+    disable_up = True
+
+    if provisional_ev < min_ev:
+        skip_reason = "no_ev"
+    elif provisional_side == "Up" and disable_up:
+        skip_reason = "up_side_disabled"
+
+    assert skip_reason == "up_side_disabled"
+
+
+def test_up_side_disabled_does_not_affect_down():
+    """Down side must be unaffected when btc_scalp_disable_up_entries=True."""
+    provisional_side = "Down"
+    provisional_ev = 0.05
+    skip_reason = None
+
+    min_ev = 0.01
+    disable_up = True
+
+    if provisional_ev < min_ev:
+        skip_reason = "no_ev"
+    elif provisional_side == "Up" and disable_up:
+        skip_reason = "up_side_disabled"
+
+    assert skip_reason is None
+
+
+def test_up_side_enabled_allows_up():
+    """When btc_scalp_disable_up_entries=False, Up entries must not be blocked."""
+    provisional_side = "Up"
+    provisional_ev = 0.05
+    skip_reason = None
+
+    min_ev = 0.01
+    disable_up = False
+
+    if provisional_ev < min_ev:
+        skip_reason = "no_ev"
+    elif provisional_side == "Up" and disable_up:
+        skip_reason = "up_side_disabled"
+
+    assert skip_reason is None

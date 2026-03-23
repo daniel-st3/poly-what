@@ -646,6 +646,7 @@ class BtcScalpStrategy:
         already_traded_seen = 0
         no_effective_ask_seen = 0
         eff_ask_floor_seen = 0
+        up_side_disabled_seen = 0
         realized_vol = self._get_realized_vol()
 
         for m in btc_markets:
@@ -925,6 +926,8 @@ class BtcScalpStrategy:
                         skip_reason = "spread_too_wide"
                     elif provisional_ev < settings.btc_scalp_min_ev_per_contract:
                         skip_reason = "no_ev"
+                    elif provisional_side == "Up" and settings.btc_scalp_disable_up_entries:
+                        skip_reason = "up_side_disabled"
 
             if skip_reason:
                 print(
@@ -955,6 +958,8 @@ class BtcScalpStrategy:
                 no_ev_seen += 1
             elif skip_reason == "invalid_market_mapping":
                 invalid_mapping_seen += 1
+            elif skip_reason == "up_side_disabled":
+                up_side_disabled_seen += 1
             elif decision == "trade":
                 trade_candidates_seen += 1
             if provisional_side is not None and not is_stub:
@@ -1167,7 +1172,8 @@ class BtcScalpStrategy:
             f" | invalid_mapping={invalid_mapping_seen}"
             f" | already_traded={already_traded_seen}"
             f" | no_eff_ask={no_effective_ask_seen}"
-            f" | eff_ask_floor={eff_ask_floor_seen}",
+            f" | eff_ask_floor={eff_ask_floor_seen}"
+            f" | up_disabled={up_side_disabled_seen}",
             flush=True,
         )
 

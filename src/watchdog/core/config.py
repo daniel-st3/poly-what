@@ -96,6 +96,7 @@ class Settings(BaseSettings):
     btc_scalp_momentum_adjust_weight: float = 0.05     # small momentum nudge added to model prob (0 = off)
     btc_scalp_require_clob: bool = True                # if True, skip entry when CLOB executable price unavailable
     btc_scalp_min_best_bid: float = 0.05               # reject side when best bid < this (stub book guard)
+    btc_scalp_disable_up_entries: bool = True          # block Up-side entries pending model calibration
 
     # Exit management — tiered thresholds
     take_profit_pct: float = Field(default=0.10, ge=0.01, le=5.0)   # tier-1 TP (50% exit)
