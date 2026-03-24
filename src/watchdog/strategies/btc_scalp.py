@@ -482,11 +482,12 @@ class BtcScalpStrategy:
         """Extract yes/no CLOB token IDs from a Gamma market dict.
 
         TOKEN MAPPING (explicit):
-          clobTokenIds[0] → NO  token → "Down" side (BTC ends BELOW reference price)
-          clobTokenIds[1] → YES token → "Up" side  (BTC ends ABOVE reference price)
+          clobTokenIds[0] → YES token → "Up" side  (BTC ends ABOVE reference price)
+          clobTokenIds[1] → NO  token → "Down" side (BTC ends BELOW reference price)
 
-        Polymarket btc-updown-5m markets have outcomes ordered [No, Yes] (index 0 = No/Down,
-        index 1 = Yes/Up). outcomePrices and clobTokenIds share this same ordering.
+        Polymarket binary markets use standard [Yes, No] outcome ordering:
+          outcomePrices[0] = Yes/Up price, outcomePrices[1] = No/Down price.
+          clobTokenIds follows the same index ordering.
 
         Buying YES = betting BTC goes UP.
         Buying NO  = betting BTC goes DOWN (we buy NO when side == "Down").
@@ -502,8 +503,8 @@ class BtcScalpStrategy:
                 raw = []
         if not isinstance(raw, list):
             raw = []
-        yes_id = str(raw[1]) if len(raw) > 1 and raw[1] else None
-        no_id = str(raw[0]) if len(raw) > 0 and raw[0] else None
+        yes_id = str(raw[0]) if len(raw) > 0 and raw[0] else None
+        no_id = str(raw[1]) if len(raw) > 1 and raw[1] else None
         return yes_id, no_id
 
     @staticmethod
@@ -556,8 +557,8 @@ class BtcScalpStrategy:
         """
         try:
             outcome_prices = json.loads(market.get("outcomePrices") or '["0.5","0.5"]')
-            up_price = float(outcome_prices[1])    # index 1 = Yes/Up price
-            down_price = float(outcome_prices[0])  # index 0 = No/Down price
+            up_price = float(outcome_prices[0])    # index 0 = Yes/Up price
+            down_price = float(outcome_prices[1])  # index 1 = No/Down price
         except (ValueError, IndexError, TypeError):
             return None
 
@@ -696,7 +697,7 @@ class BtcScalpStrategy:
             # Parse Gamma mid prices
             try:
                 outcome_prices = json.loads(m.get("outcomePrices") or '["0.5","0.5"]')
-                up_price_mid = float(outcome_prices[1])    # index 1 = Yes/Up price
+                up_price_mid = float(outcome_prices[0])    # index 0 = Yes/Up price
             except (ValueError, IndexError, TypeError):
                 up_price_mid = 0.5
             # Binary market identity: down = 1 - up (mutually exclusive binary outcomes)
@@ -1328,9 +1329,9 @@ class BtcScalpStrategy:
                                         )
 
                                 # Fallback: derive outcome from outcomePrices when prices are definitive.
-                                # btc-updown-5m markets have outcomes ordered [No, Yes]:
-                                #   outcomePrices[0] = No/Down price → ["1","0"] means NO-win
-                                #   outcomePrices[1] = Yes/Up  price → ["0","1"] means YES-win
+                                # Standard Polymarket binary ordering [Yes, No]:
+                                #   outcomePrices[0] = Yes/Up  price → ["1","0"] means YES-win
+                                #   outcomePrices[1] = No/Down price → ["0","1"] means NO-win
                                 _prices_raw = item.get("outcomePrices")
                                 if _prices_raw and outcome not in ("YES", "NO"):
                                     try:
@@ -1342,24 +1343,24 @@ class BtcScalpStrategy:
                                         _p0 = float(_prices[0])
                                         _p1 = float(_prices[1])
                                         if _p0 >= 0.99:
-                                            # outcomePrices[0] = No/Down → No/Down wins
-                                            outcome = "NO"
-                                            market.resolution_outcome = outcome
-                                            market.status = "resolved"
-                                            print(
-                                                f"[Gamma] resolved_via_prices slug={market.slug}"
-                                                f" outcomePrices=[{_p0},{_p1}] → outcome=NO",
-                                                flush=True,
-                                            )
-                                            break
-                                        elif _p1 >= 0.99:
-                                            # outcomePrices[1] = Yes/Up → Yes/Up wins
+                                            # outcomePrices[0] = Yes/Up → Yes/Up wins
                                             outcome = "YES"
                                             market.resolution_outcome = outcome
                                             market.status = "resolved"
                                             print(
                                                 f"[Gamma] resolved_via_prices slug={market.slug}"
                                                 f" outcomePrices=[{_p0},{_p1}] → outcome=YES",
+                                                flush=True,
+                                            )
+                                            break
+                                        elif _p1 >= 0.99:
+                                            # outcomePrices[1] = No/Down → No/Down wins
+                                            outcome = "NO"
+                                            market.resolution_outcome = outcome
+                                            market.status = "resolved"
+                                            print(
+                                                f"[Gamma] resolved_via_prices slug={market.slug}"
+                                                f" outcomePrices=[{_p0},{_p1}] → outcome=NO",
                                                 flush=True,
                                             )
                                             break
