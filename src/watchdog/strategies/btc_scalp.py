@@ -810,6 +810,17 @@ class BtcScalpStrategy:
             if skip_reason is None:
                 if up_entry_price is None and down_entry_price is None:
                     skip_reason = "missing_clob"
+                elif up_entry_price is None and p_up > 0.5:
+                    # Up CLOB fetch failed (ev_up=-inf) and model says Up is more likely.
+                    # _select_side would unconditionally return "Down" (any finite > -inf),
+                    # forcing a Down entry that contradicts the model's primary direction.
+                    # Skip instead of trading against the signal.
+                    skip_reason = "up_clob_missing_model_bullish"
+                    print(
+                        f"[Scan] skip slug={_slug_raw} reason=up_clob_missing_model_bullish"
+                        f" p_up={p_up:.4f} up_entry_price=None down_entry_price={down_entry_price}",
+                        flush=True,
+                    )
                 else:
                     provisional_side = self._select_side(ev_up, ev_down)
                     if provisional_side == "Up":
@@ -960,6 +971,8 @@ class BtcScalpStrategy:
                 invalid_mapping_seen += 1
             elif skip_reason == "up_side_disabled":
                 up_side_disabled_seen += 1
+            elif skip_reason == "up_clob_missing_model_bullish":
+                up_side_disabled_seen += 1  # group with up-disabled for summary brevity
             elif decision == "trade":
                 trade_candidates_seen += 1
             if provisional_side is not None and not is_stub:
