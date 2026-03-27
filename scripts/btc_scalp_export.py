@@ -27,6 +27,8 @@ from datetime import UTC, datetime
 
 sys.path.insert(0, "src")
 
+from sqlalchemy import select
+
 from watchdog.core.config import get_settings
 from watchdog.db.models import BtcScanLog, Market, Trade
 from watchdog.db.session import build_engine, build_session_factory
@@ -105,16 +107,25 @@ def main() -> None:
         q = q.order_by(BtcScanLog.timestamp_utc.asc())
         scan_rows = q.all()
 
-        # Build a lookup: market_id → list of trades (btc_scalp, paper)
-        all_trades = (
-            session.query(Trade)
-            .filter(
-                Trade.strategy == "btc_scalp",
-                Trade.is_paper.is_(True),
-            )
-            .all()
+        # Build a lookup: market_id → list of trades (btc_scalp, paper).
+        # Narrow projection to only the 7 columns used below; date-bound to
+        # match the scan query so this never becomes an unbounded table scan.
+        trades_stmt = select(
+            Trade.id,
+            Trade.market_id,
+            Trade.side,
+            Trade.status,
+            Trade.pnl,
+            Trade.entry_price,
+            Trade.closed_at,
+        ).where(
+            Trade.strategy == "btc_scalp",
+            Trade.is_paper.is_(True),
         )
-        trades_by_market: dict[int, list[Trade]] = {}
+        if since_dt:
+            trades_stmt = trades_stmt.where(Trade.created_at >= since_dt)
+        all_trades = session.execute(trades_stmt).all()
+        trades_by_market: dict[int, list] = {}
         for t in all_trades:
             trades_by_market.setdefault(t.market_id, []).append(t)
 
