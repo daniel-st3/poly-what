@@ -93,6 +93,7 @@ class Settings(BaseSettings):
     btc_scalp_min_minutes_left: float = 0.5            # only trade when >= this many minutes to expiry
     btc_scalp_max_minutes_left: float = 6.5            # only trade when <= this many minutes to expiry
     btc_scalp_vol_floor: float = 0.001                 # denominator floor for z-score (prevents div-by-zero)
+    btc_scalp_min_signal_drift: float = 0.001          # skip entry if |log(curr/anchor)| < this; sub-floor signal is noise
     btc_scalp_momentum_adjust_weight: float = 0.05     # small momentum nudge added to model prob (0 = off)
     btc_scalp_require_clob: bool = True                # if True, skip entry when CLOB executable price unavailable
     btc_scalp_min_best_bid: float = 0.05               # reject side when best bid < this (stub book guard)

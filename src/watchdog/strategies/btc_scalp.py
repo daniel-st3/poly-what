@@ -647,6 +647,7 @@ class BtcScalpStrategy:
         no_effective_ask_seen = 0
         eff_ask_floor_seen = 0
         up_side_disabled_seen = 0
+        drift_below_floor_seen = 0
         realized_vol = self._get_realized_vol()
 
         for m in btc_markets:
@@ -935,6 +936,8 @@ class BtcScalpStrategy:
                                 skip_reason = "stub_book"
                     elif self._should_skip_for_spread(side_spread, settings.btc_scalp_max_spread):
                         skip_reason = "spread_too_wide"
+                    elif abs(math.log(btc / start_price_proxy)) < settings.btc_scalp_min_signal_drift:
+                        skip_reason = "drift_below_vol_floor"
                     elif provisional_ev < settings.btc_scalp_min_ev_per_contract:
                         skip_reason = "no_ev"
                     elif provisional_side == "Up" and settings.btc_scalp_disable_up_entries:
@@ -973,6 +976,8 @@ class BtcScalpStrategy:
                 up_side_disabled_seen += 1
             elif skip_reason == "up_clob_missing_model_bullish":
                 up_side_disabled_seen += 1  # group with up-disabled for summary brevity
+            elif skip_reason == "drift_below_vol_floor":
+                drift_below_floor_seen += 1
             elif decision == "trade":
                 trade_candidates_seen += 1
             if provisional_side is not None and not is_stub:
@@ -1186,6 +1191,7 @@ class BtcScalpStrategy:
             f" | already_traded={already_traded_seen}"
             f" | no_eff_ask={no_effective_ask_seen}"
             f" | eff_ask_floor={eff_ask_floor_seen}"
+            f" | drift_floor={drift_below_floor_seen}"
             f" | up_disabled={up_side_disabled_seen}",
             flush=True,
         )
