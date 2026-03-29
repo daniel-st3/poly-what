@@ -938,6 +938,8 @@ class BtcScalpStrategy:
                         skip_reason = "spread_too_wide"
                     elif abs(math.log(btc / start_price_proxy)) < settings.btc_scalp_min_signal_drift:
                         skip_reason = "drift_below_vol_floor"
+                    elif provisional_side == "Down" and p_up < settings.btc_scalp_min_p_up_for_down:
+                        skip_reason = "p_up_at_floor"
                     elif provisional_ev < settings.btc_scalp_min_ev_per_contract:
                         skip_reason = "no_ev"
                     elif provisional_side == "Up" and settings.btc_scalp_disable_up_entries:
