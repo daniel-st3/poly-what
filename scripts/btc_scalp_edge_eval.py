@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import math
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -91,7 +90,7 @@ def _bucket_minutes(ml: float | None) -> str:
 
 
 def _bucket_entry(ep: float | None) -> str:
-    """Binary contract entry price (0–1 scale)."""
+    """Binary contract entry price (0-1 scale)."""
     if ep is None:
         return "unknown"
     if ep < 0.10:
@@ -263,7 +262,7 @@ def main() -> None:
     # ── overall baseline ──────────────────────────────────────────────────────
     all_pnls = [_f(r.get("trade_pnl", "")) for r in trade_rows]
     all_pnls = [p for p in all_pnls if p is not None]
-    n_all, wins_all, wr_all, avg_all, tot_all = _stats(all_pnls)
+    n_all, _wins_all, wr_all, avg_all, tot_all = _stats(all_pnls)
     print(f"\n  Overall: n={n_all}  win={wr_all*100:.1f}%  avg_pnl={avg_all:+.4f}  total={tot_all:+.4f}")
 
     # ── tables ────────────────────────────────────────────────────────────────
@@ -316,7 +315,7 @@ def main() -> None:
         pnls = side_pnl.get(side, [])
         if not pnls:
             continue
-        n, wins, wr, avg, tot = _stats(pnls)
+        n, _wins, wr, avg, tot = _stats(pnls)
         print(f"  {side:<8} n={n:>4}  win={wr*100:>5.1f}%  avg={avg:>+8.4f}  total={tot:>+9.4f}")
 
     # ── conclusion ────────────────────────────────────────────────────────────
@@ -328,26 +327,23 @@ def main() -> None:
     print(f"  Total pnl        : {tot_all:+.4f}")
     print()
 
-    if not any_edge:
-        # Also check overall
-        if wr_all > EDGE_WIN_THRESHOLD and avg_all > EDGE_PNL_THRESHOLD:
-            any_edge = True
+    if not any_edge and wr_all > EDGE_WIN_THRESHOLD and avg_all > EDGE_PNL_THRESHOLD:
+        any_edge = True
 
     if any_edge:
         print("  Narrow edge detected in the following regimes:")
         for line in all_regimes:
             print(line)
         print()
-        print("  These regimes show win rate > {:.0f}% AND avg pnl > {:.2f} on n >= {} trades.".format(
-            EDGE_WIN_THRESHOLD * 100, EDGE_PNL_THRESHOLD, MIN_BUCKET_COUNT))
+        print(f"  These regimes show win rate > {EDGE_WIN_THRESHOLD*100:.0f}% AND avg pnl > {EDGE_PNL_THRESHOLD:.2f} on n >= {MIN_BUCKET_COUNT} trades.")
         print("  Strategy shows no broad edge but may be viable when filtered to these regimes.")
         print()
-        print(f"  VERDICT: REBUILD_FOR_REGIME")
+        print("  VERDICT: REBUILD_FOR_REGIME")
     else:
         print("  No bucket across any dimension meets both win-rate and avg-pnl thresholds.")
         print("  The strategy produces negative or neutral expectation in all measurable regimes.")
         print()
-        print(f"  VERDICT: RETIRE")
+        print("  VERDICT: RETIRE")
 
     print(f"{'='*70}\n")
 
