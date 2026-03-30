@@ -126,6 +126,7 @@ class Settings(BaseSettings):
     experiment_id: str = "feb2026_v1"
 
     # Strategy module feature flags
+    enable_btc_scalp: bool = False  # Retired 2026-03-29 — see BTC_SCALP_RETROSPECTIVE.md
     enable_intra_event_arb: bool = True
     enable_pair_cost_scan: bool = True
     enable_resolution_filter: bool = True

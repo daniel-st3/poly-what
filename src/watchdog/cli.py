@@ -1490,10 +1490,13 @@ def run_btc_scalp_command() -> None:
     print(f"Python {sys.version} — starting up", flush=True)
     print("⚡ run-btc-scalp entrypoint reached", flush=True)
 
+    settings = get_settings()
+    if not settings.enable_btc_scalp:
+        typer.echo("btc_scalp is disabled (enable_btc_scalp=false). See BTC_SCALP_RETROSPECTIVE.md.")
+        return
+
     from watchdog.notifications.telegram import send_telegram
     from watchdog.strategies.btc_scalp import BtcScalpStrategy
-
-    settings = get_settings()
     send_telegram(
         "⚡ BTC Scalp Worker booting on Railway 🚀\nConnecting to Coinbase price feed...",
         settings.telegram_bot_token,
